@@ -99,6 +99,9 @@ export async function getMonthlyLines(year: number, month: number): Promise<Mont
     .innerJoin(customers, eq(orders.customerId, customers.id))
     .where(
       and(
+        // The monthly ledger reflects closed lines only (like the legacy
+        // monthly sheets); open lines join it once they are closed.
+        eq(orderLines.isOpen, false),
         sql`extract(year from ${orders.orderDate}) = ${year}`,
         sql`extract(month from ${orders.orderDate}) = ${month}`,
       ),
@@ -112,7 +115,8 @@ export async function getAvailableMonths(): Promise<string[]> {
   const rows = await db
     .select({ ym: sql<string>`to_char(${orders.orderDate}, 'YYYY-MM')` })
     .from(orders)
-    .where(sql`${orders.orderDate} is not null`)
+    .innerJoin(orderLines, eq(orderLines.orderId, orders.id))
+    .where(and(sql`${orders.orderDate} is not null`, eq(orderLines.isOpen, false)))
     .groupBy(sql`to_char(${orders.orderDate}, 'YYYY-MM')`)
     .orderBy(desc(sql`to_char(${orders.orderDate}, 'YYYY-MM')`));
   return rows.map((r) => r.ym);

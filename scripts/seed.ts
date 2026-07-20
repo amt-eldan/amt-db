@@ -2,7 +2,8 @@
  * Seed sample data (idempotent-ish: skips if customers already exist).
  * Run: npm run db:seed
  */
-import "dotenv/config";
+import { config } from "dotenv";
+config({ path: [".env.local", ".env"] });
 import { neonConfig, Pool } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import ws from "ws";

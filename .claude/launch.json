@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "amt-orders-dev",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\npm.cmd",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "C:\\Users\\eldan\\Documents\\AMT\\Claude\\amt-orders",
+      "port": 3000
+    }
+  ]
+}

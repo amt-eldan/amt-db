@@ -100,7 +100,12 @@ export function MonthlyView({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">סיכום חודשי</h1>
+        <div>
+          <h1 className="text-2xl font-bold">סיכום חודשי</h1>
+          <p className="text-xs text-muted-foreground">
+            מציג שורות סגורות בלבד (לפי חודש קבלת ההזמנה)
+          </p>
+        </div>
         <div className="flex items-center gap-2">
           <Select value={selected} onValueChange={(v) => router.push(`/monthly?month=${v}`)}>
             <SelectTrigger className="w-40">
@@ -135,7 +140,7 @@ export function MonthlyView({
       {rows.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
-            אין הזמנות בחודש {formatMonth(selected)}.
+            אין שורות סגורות בחודש {formatMonth(selected)}.
           </CardContent>
         </Card>
       ) : (
