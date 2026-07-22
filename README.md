@@ -7,6 +7,8 @@
 - **shadcn/ui** + Tailwind, עברית RTL מלאה
 - פריסה: **Vercel**
 
+**סביבה חיה:** https://amt-db.vercel.app · ריפו: https://github.com/amt-eldan/amt-db (מחובר ל-Vercel — כל `git push` ל-`main` מפעיל deploy אוטומטי).
+
 ## מסכים
 
 | מסך | נתיב | תיאור |
