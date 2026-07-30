@@ -28,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Customer } from "@/db/schema";
+import { isModOrderNumber } from "@/lib/validation";
 import { CustomerCombobox } from "./customer-combobox";
 
 interface LineDraft {
@@ -39,11 +40,6 @@ interface LineDraft {
 }
 
 const emptyLine = (): LineDraft => ({ pn: "", sku: "", qty: "", unitPrice: "", contractDueDate: "" });
-
-/** MoD orders: 10 digits starting with 444 → the customer is the purchasing-group number. */
-export function isModOrderNumber(orderNumber: string): boolean {
-  return /^444\d{7}$/.test(orderNumber.trim());
-}
 
 export function IntakeForm({ customers }: { customers: Customer[] }) {
   const router = useRouter();

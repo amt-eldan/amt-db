@@ -1,6 +1,7 @@
 import { getCustomers, getStagedOrders } from "@/db/queries";
 import { IntakeForm } from "@/components/intake/intake-form";
 import { StagedList } from "@/components/intake/staged-list";
+import { UploadOrderButton } from "@/components/intake/upload-order-button";
 import { Separator } from "@/components/ui/separator";
 import { stagedPayload, type StagedPayload } from "@/lib/validation";
 
@@ -26,6 +27,8 @@ export default async function IntakePage() {
           הזנה ידנית של הזמנת לקוח, או אישור הזמנות שנסרקו אוטומטית.
         </p>
       </div>
+
+      <UploadOrderButton />
 
       <StagedList items={stagedItems} />
 
