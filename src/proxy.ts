@@ -4,8 +4,13 @@ import { SESSION_COOKIE, verifySessionValue } from "@/lib/auth";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // /api/staged authenticates with its own bearer token; /login is public.
-  if (pathname === "/login" || pathname.startsWith("/api/staged")) {
+  // /api/staged and /api/bol authenticate with their own bearer tokens;
+  // /login is public.
+  if (
+    pathname === "/login" ||
+    pathname.startsWith("/api/staged") ||
+    pathname.startsWith("/api/bol")
+  ) {
     return NextResponse.next();
   }
 

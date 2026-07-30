@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Archive, ArchiveRestore, Check, Pencil, Search, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
 import {
@@ -77,8 +77,14 @@ export function OpenOrdersView({ lines }: { lines: OpenLineRow[] }) {
       if (showArchived && line.isOpen) return false;
       if (statusFilter !== "all" && line.status !== statusFilter) return false;
       if (!q) return true;
-      return [line.customerName, line.orderNumber, line.pn, line.poNumber, line.supplier]
-        .some((v) => v?.toLowerCase().includes(q));
+      return [
+        line.customerName,
+        line.orderNumber,
+        line.pn,
+        line.poNumber,
+        line.supplier,
+        line.bol,
+      ].some((v) => v?.toLowerCase().includes(q));
     });
   }, [withStatus, search, statusFilter, showArchived]);
 
@@ -171,7 +177,7 @@ export function OpenOrdersView({ lines }: { lines: OpenLineRow[] }) {
         <div className="relative flex-1">
           <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
           <Input
-            placeholder="חיפוש לקוח / מס' הזמנה / P/N / ספק..."
+            placeholder="חיפוש לקוח / מס' הזמנה / P/N / ספק / שטר מטען..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="ps-9"
@@ -255,10 +261,23 @@ export function OpenOrdersView({ lines }: { lines: OpenLineRow[] }) {
                       <TableCell dir="ltr" className="text-end">{line.poNumber ?? "—"}</TableCell>
                       <TableCell>{line.supplier ?? "—"}</TableCell>
                       <TableCell>
-                        {line.bol ? (
-                          <Badge variant="secondary" dir="ltr" className="max-w-32 truncate">
-                            {line.bol}
-                          </Badge>
+                        {/* Whitespace counts as no BOL, same as lineStatus treats it. */}
+                        {line.bol?.trim() ? (
+                          <div className="flex flex-col items-start gap-0.5">
+                            <span className="flex items-center gap-1">
+                              <Badge variant="secondary" dir="ltr" className="max-w-32 truncate">
+                                {line.bol}
+                              </Badge>
+                              {line.bolSource === "auto" && (
+                                <span title="מולא אוטומטית על ידי מעקב המשלוחים">
+                                  <Bot className="size-3.5 shrink-0 text-muted-foreground" />
+                                </span>
+                              )}
+                            </span>
+                            {line.carrier && (
+                              <span className="text-xs text-muted-foreground">{line.carrier}</span>
+                            )}
+                          </div>
                         ) : (
                           "—"
                         )}
@@ -303,9 +322,11 @@ export function OpenOrdersView({ lines }: { lines: OpenLineRow[] }) {
                       <span>ספק: {line.supplier ?? "—"}</span>
                       <span>יעד: <bdi dir="ltr">{formatDate(line.contractDueDate)}</bdi></span>
                       {line.poNumber && <span>רכש: <bdi dir="ltr">{line.poNumber}</bdi></span>}
-                      {line.bol && (
+                      {line.bol?.trim() && (
                         <span className="col-span-2">
                           שטר מטען: <bdi dir="ltr">{line.bol}</bdi>
+                          {line.carrier && ` · ${line.carrier}`}
+                          {line.bolSource === "auto" && " · אוטומטי"}
                         </span>
                       )}
                     </div>

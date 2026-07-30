@@ -52,6 +52,7 @@ export function LineEditSheet({
       deliveryUpdate: line.deliveryUpdate ?? "",
       paymentMethod: line.paymentMethod ?? "",
       bol: line.bol ?? "",
+      carrier: line.carrier ?? "",
       notes: line.notes ?? "",
       manualStatus: line.manualStatus ?? AUTO,
     });
@@ -114,9 +115,18 @@ export function LineEditSheet({
           <Field label="שיטת תשלום">
             <Input value={form.paymentMethod ?? ""} onChange={(e) => set("paymentMethod", e.target.value)} />
           </Field>
-          <Field label="שטר מטען (BOL)" full>
+          <Field label="שטר מטען (BOL)">
             <Input dir="ltr" value={form.bol ?? ""} onChange={(e) => set("bol", e.target.value)} />
           </Field>
+          <Field label="חברת הובלה">
+            <Input value={form.carrier ?? ""} onChange={(e) => set("carrier", e.target.value)} />
+          </Field>
+          {line?.bolSource === "auto" && (
+            <p className="col-span-2 -mt-1 text-xs text-muted-foreground">
+              שטר המטען מולא אוטומטית על ידי מעקב המשלוחים
+              {line.bolConfidence && ` (ודאות ${line.bolConfidence})`}. שמירה כאן מסמנת אותו כמאומת.
+            </p>
+          )}
           <Field label="עדכון אספקה" full>
             <Textarea rows={2} value={form.deliveryUpdate ?? ""} onChange={(e) => set("deliveryUpdate", e.target.value)} />
           </Field>

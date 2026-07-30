@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { customers, orderLines, orders } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { applyLineFields } from "@/lib/line-fields";
 import { requireSession } from "@/lib/require-session";
 import { MANUAL_STATUSES } from "@/lib/status";
 import { manualFieldsInput, orderInput, type OrderInput } from "@/lib/validation";
@@ -141,17 +142,15 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
   const [existing] = await db.select().from(orderLines).where(eq(orderLines.id, lineId));
   if (!existing) return { ok: false, error: "השורה לא נמצאה" };
 
-  await db
-    .update(orderLines)
-    .set({ ...fields, updatedAt: new Date() })
-    .where(eq(orderLines.id, lineId));
-
-  const diff: Record<string, { from: unknown; to: unknown }> = {};
-  for (const [k, v] of Object.entries(fields)) {
-    const before = existing[k as keyof typeof existing];
-    if (String(before ?? "") !== String(v ?? "")) diff[k] = { from: before, to: v };
+  // Editing the BOL by hand takes ownership of it: drop the "auto" marker and
+  // the agent's confidence so the UI stops flagging it as unreviewed.
+  const toWrite: Record<string, unknown> = { ...fields };
+  if (String(fields.bol ?? "") !== String(existing.bol ?? "")) {
+    toWrite.bolSource = fields.bol ? "manual" : null;
+    toWrite.bolConfidence = null;
   }
-  await audit("order_line", lineId, "update", diff);
+
+  await applyLineFields(existing, toWrite);
   revalidatePath("/");
   revalidatePath("/monthly");
   return { ok: true, message: "השורה עודכנה" };

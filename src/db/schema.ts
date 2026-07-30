@@ -53,6 +53,11 @@ export const orderLines = pgTable("order_lines", {
   deliveryUpdate: text("delivery_update"),
   paymentMethod: text("payment_method"),
   bol: text("bol"),
+  carrier: text("carrier"),
+  // Provenance for `bol`: 'auto' when the tracking agent filled it, 'manual'
+  // once a human typed or corrected it. Lets the UI flag unreviewed values.
+  bolSource: text("bol_source"), // NULL | 'auto' | 'manual'
+  bolConfidence: numeric("bol_confidence"), // 0..1, only meaningful for 'auto'
   notes: text("notes"),
   manualStatus: text("manual_status"), // NULL | 'הגיע' | 'סופק חלקי' | 'מאחר'
   isOpen: boolean("is_open").notNull().default(true),

@@ -22,6 +22,9 @@ export interface OpenLineRow {
   deliveryUpdate: string | null;
   paymentMethod: string | null;
   bol: string | null;
+  carrier: string | null;
+  bolSource: string | null;
+  bolConfidence: string | null;
   notes: string | null;
   manualStatus: string | null;
   isOpen: boolean;
@@ -50,6 +53,9 @@ export async function getLines(includeArchived: boolean): Promise<OpenLineRow[]>
       deliveryUpdate: orderLines.deliveryUpdate,
       paymentMethod: orderLines.paymentMethod,
       bol: orderLines.bol,
+      carrier: orderLines.carrier,
+      bolSource: orderLines.bolSource,
+      bolConfidence: orderLines.bolConfidence,
       notes: orderLines.notes,
       manualStatus: orderLines.manualStatus,
       isOpen: orderLines.isOpen,
@@ -120,6 +126,52 @@ export async function getAvailableMonths(): Promise<string[]> {
     .groupBy(sql`to_char(${orders.orderDate}, 'YYYY-MM')`)
     .orderBy(desc(sql`to_char(${orders.orderDate}, 'YYYY-MM')`));
   return rows.map((r) => r.ym);
+}
+
+export interface BolWorklistRow {
+  lineId: number;
+  orderNumber: string;
+  customer: string;
+  pn: string | null;
+  sku: string | null;
+  poNumber: string | null;
+  supplier: string | null;
+  contractDueDate: string | null;
+}
+
+/**
+ * Open lines that still have no bill of lading, each with the keys the external
+ * tracking agent searches the mailbox by (PO number, P/N, order number,
+ * supplier). This is what turns a blind inbox scan into a targeted lookup: the
+ * agent is told which lines need a number and echoes back the lineId, so a match
+ * is never guessed against the table.
+ *
+ * Lines already marked "הגיע" by hand need no tracking. Most urgent first, so a
+ * partial run still covers the lines that matter.
+ */
+export async function getBolWorklist(): Promise<BolWorklistRow[]> {
+  return db
+    .select({
+      lineId: orderLines.id,
+      orderNumber: orders.orderNumber,
+      customer: customers.name,
+      pn: orderLines.pn,
+      sku: orderLines.sku,
+      poNumber: orderLines.poNumber,
+      supplier: orderLines.supplier,
+      contractDueDate: orderLines.contractDueDate,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(
+      and(
+        eq(orderLines.isOpen, true),
+        sql`coalesce(trim(${orderLines.bol}), '') = ''`,
+        sql`${orderLines.manualStatus} is distinct from 'הגיע'`,
+      ),
+    )
+    .orderBy(sql`${orderLines.contractDueDate} asc nulls last`, asc(orderLines.id));
 }
 
 export async function getCustomers() {

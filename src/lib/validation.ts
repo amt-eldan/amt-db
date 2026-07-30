@@ -54,6 +54,7 @@ export const manualFieldsInput = z.object({
   deliveryUpdate: optionalText,
   paymentMethod: optionalText,
   bol: optionalText,
+  carrier: optionalText,
   notes: optionalText,
   qty: optionalNumeric,
   unitPrice: optionalNumeric,
@@ -87,5 +88,29 @@ export const stagedPayload = z.object({
     .min(1),
 });
 
+/**
+ * One bill-of-lading match accepted by POST /api/bol/matches (from the external
+ * tracking agent). `lineId` comes from the worklist the agent was handed, so a
+ * match is bound to exactly one line rather than re-matched here.
+ */
+export const bolMatchInput = z.object({
+  lineId: z.number().int().positive(),
+  bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
+  carrier: optionalText,
+  statusText: optionalText,
+  sourceEmailId: optionalText,
+  sourceQuote: optionalText,
+  confidence: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .transform((v) => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = typeof v === "string" ? parseFloat(v) : v;
+      if (!Number.isFinite(n)) return null;
+      return String(Math.min(1, Math.max(0, n)));
+    }),
+});
+
 export type StagedPayload = z.infer<typeof stagedPayload>;
 export type OrderInput = z.infer<typeof orderInput>;
+export type BolMatchInput = z.infer<typeof bolMatchInput>;

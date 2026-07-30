@@ -38,6 +38,14 @@ describe("lineStatus", () => {
     expect(lineStatus({ ...base, bol: "X", contractDueDate: "2020-01-01" }, today)).toBe("green");
   });
 
+  // An auto-filled BOL must colour a row exactly like a hand-typed one: the
+  // tracking agent's write closes the loop through this same rule.
+  it("ignores how the bol was filled", () => {
+    const extras = { carrier: "UPS", bolSource: "auto", bolConfidence: "0.95" };
+    expect(lineStatus({ ...base, ...extras, bol: "1Z999" }, today)).toBe("green");
+    expect(lineStatus({ ...base, ...extras, bol: null }, today)).toBe("neutral");
+  });
+
   it("default neutral", () => {
     expect(lineStatus(base, today)).toBe("neutral");
   });
