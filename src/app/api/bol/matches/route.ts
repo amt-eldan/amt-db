@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
   if (written > 0) {
     revalidatePath("/");
     revalidatePath("/monthly");
+    revalidatePath("/bol");
   }
 
   return NextResponse.json({

@@ -1,6 +1,13 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { customers, orderLines, orders, stagedOrders } from "@/db/schema";
+import {
+  customers,
+  orderLines,
+  orders,
+  stagedOrders,
+  supplierInvoiceFiles,
+  supplierInvoices,
+} from "@/db/schema";
 
 export interface LineRow {
   lineId: number;
@@ -151,6 +158,83 @@ export async function getBolWorklist(): Promise<BolWorklistRow[]> {
       ),
     )
     .orderBy(sql`${orderLines.contractDueDate} asc nulls last`, asc(orderLines.id));
+}
+
+export interface SupplierInvoiceRow {
+  id: number;
+  supplier: string;
+  invoiceNumber: string;
+  invoiceDate: string | null;
+  poNumber: string | null;
+  orderId: number | null;
+  orderNumber: string | null;
+  customerName: string | null;
+  amount: string | null;
+  currency: string;
+  notes: string | null;
+  fileName: string | null;
+  source: string;
+  hasFile: boolean;
+  createdAt: Date;
+}
+
+/**
+ * Supplier invoices, newest document first. Deliberately never selects
+ * `supplier_invoice_files.bytes` — the file is served by its own route.
+ */
+export async function getSupplierInvoices(): Promise<SupplierInvoiceRow[]> {
+  return db
+    .select({
+      id: supplierInvoices.id,
+      supplier: supplierInvoices.supplier,
+      invoiceNumber: supplierInvoices.invoiceNumber,
+      invoiceDate: supplierInvoices.invoiceDate,
+      poNumber: supplierInvoices.poNumber,
+      orderId: supplierInvoices.orderId,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      amount: supplierInvoices.amount,
+      currency: supplierInvoices.currency,
+      notes: supplierInvoices.notes,
+      fileName: supplierInvoices.fileName,
+      source: supplierInvoices.source,
+      hasFile: sql<boolean>`${supplierInvoiceFiles.invoiceId} is not null`,
+      createdAt: supplierInvoices.createdAt,
+    })
+    .from(supplierInvoices)
+    .leftJoin(orders, eq(supplierInvoices.orderId, orders.id))
+    .leftJoin(customers, eq(orders.customerId, customers.id))
+    .leftJoin(supplierInvoiceFiles, eq(supplierInvoiceFiles.invoiceId, supplierInvoices.id))
+    .orderBy(sql`${supplierInvoices.invoiceDate} desc nulls last`, desc(supplierInvoices.id));
+}
+
+/** The stored PDF for one invoice. Used only by the file-download route. */
+export async function getSupplierInvoiceFile(invoiceId: number) {
+  const rows = await db
+    .select({
+      bytes: supplierInvoiceFiles.bytes,
+      mimeType: supplierInvoiceFiles.mimeType,
+      fileName: supplierInvoices.fileName,
+    })
+    .from(supplierInvoiceFiles)
+    .innerJoin(supplierInvoices, eq(supplierInvoices.id, supplierInvoiceFiles.invoiceId))
+    .where(eq(supplierInvoiceFiles.invoiceId, invoiceId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Orders an invoice can be attached to, newest first. */
+export async function getOrderOptions() {
+  return db
+    .select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      orderDate: orders.orderDate,
+    })
+    .from(orders)
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .orderBy(sql`${orders.orderDate} desc nulls last`, desc(orders.id));
 }
 
 export async function getCustomers() {

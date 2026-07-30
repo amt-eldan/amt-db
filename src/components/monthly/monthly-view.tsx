@@ -13,16 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { LineRow } from "@/db/queries";
 import { formatDate, formatILS, formatMonth } from "@/lib/format";
 import { lineProfit, lineValue } from "@/lib/profit";
 import { cn } from "@/lib/utils";
-import { MonthlyBolTable } from "./monthly-bol-table";
-import { hasBol, type MonthlyComputedRow } from "./monthly-shared";
-import { MonthlySummaryTable } from "./monthly-summary-table";
-
-type Tab = "summary" | "bol";
+import { MonthlySummaryTable, type MonthlyComputedRow } from "./monthly-summary-table";
 
 export function MonthlyView({
   rows,
@@ -34,7 +29,6 @@ export function MonthlyView({
   selected: string;
 }) {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("summary");
   const [editing, setEditing] = useState<LineRow | null>(null);
 
   const computed = useMemo<MonthlyComputedRow[]>(
@@ -59,48 +53,31 @@ export function MonthlyView({
     return { sale, profit, pendingCount };
   }, [computed]);
 
-  const bolCount = useMemo(() => computed.filter(hasBol).length, [computed]);
-
   function exportCsv() {
-    const headers =
-      tab === "bol"
-        ? ["לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "שטר מטען", "חברת הובלה", "מקור"]
-        : [
-            "לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "כמות",
-            "מחיר מכירה ליח'", "מחיר קנייה ליח'", "משלוח", "סך מכירה", "רווח", "שטר מטען", "הערות",
-          ];
+    const headers = [
+      "לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "כמות",
+      "מחיר מכירה ליח'", "מחיר קנייה ליח'", "משלוח", "סך מכירה", "רווח", "שטר מטען", "הערות",
+    ];
     const escape = (v: string | number | null | undefined) => {
       const s = v === null || v === undefined ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = computed.map((row) =>
-      (tab === "bol"
-        ? [
-            row.customerName,
-            row.orderNumber,
-            formatDate(row.orderDate),
-            row.pn,
-            row.supplier,
-            row.bol,
-            row.carrier,
-            hasBol(row) ? (row.bolSource === "auto" ? "אוטומטי" : "ידני") : "",
-          ]
-        : [
-            row.customerName,
-            row.orderNumber,
-            formatDate(row.orderDate),
-            row.pn,
-            row.supplier,
-            row.qty,
-            row.unitPrice,
-            row.buyPrice,
-            row.shippingCost,
-            row.sale?.toFixed(2),
-            row.profit === null ? "ממתין" : row.profit.toFixed(2),
-            row.bol,
-            row.notes,
-          ]
-      )
+      [
+        row.customerName,
+        row.orderNumber,
+        formatDate(row.orderDate),
+        row.pn,
+        row.supplier,
+        row.qty,
+        row.unitPrice,
+        row.buyPrice,
+        row.shippingCost,
+        row.sale?.toFixed(2),
+        row.profit === null ? "ממתין" : row.profit.toFixed(2),
+        row.bol,
+        row.notes,
+      ]
         .map(escape)
         .join(","),
     );
@@ -109,7 +86,7 @@ export function MonthlyView({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${tab === "bol" ? "שטרי-מטען" : "סיכום"}-${selected}.csv`;
+    a.download = `סיכום-${selected}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -154,45 +131,18 @@ export function MonthlyView({
         <TotalCard label="שורות" value={String(rows.length)} className="col-span-2 md:col-span-1" />
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-4">
-        <TabsList>
-          <TabsTrigger value="summary">סיכום</TabsTrigger>
-          <TabsTrigger value="bol">שטרי מטען</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="summary" className="flex flex-col gap-2">
-          {computed.length === 0 ? (
-            <EmptyState>אין שורות סגורות בחודש {formatMonth(selected)}.</EmptyState>
-          ) : (
-            <MonthlySummaryTable rows={computed} onEdit={setEditing} />
-          )}
-        </TabsContent>
-
-        <TabsContent value="bol" className="flex flex-col gap-2">
-          {computed.length === 0 ? (
-            <EmptyState>אין שורות סגורות בחודש {formatMonth(selected)}.</EmptyState>
-          ) : (
-            <>
-              <p className="text-xs text-muted-foreground">
-                {bolCount} מתוך {computed.length} שורות עם שטר מטען
-                {bolCount < computed.length && ` · ${computed.length - bolCount} חסרות`}
-              </p>
-              <MonthlyBolTable rows={computed} onEdit={setEditing} />
-            </>
-          )}
-        </TabsContent>
-      </Tabs>
+      {computed.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            אין שורות סגורות בחודש {formatMonth(selected)}.
+          </CardContent>
+        </Card>
+      ) : (
+        <MonthlySummaryTable rows={computed} onEdit={setEditing} />
+      )}
 
       <LineEditSheet line={editing} onClose={() => setEditing(null)} />
     </div>
-  );
-}
-
-function EmptyState({ children }: { children: React.ReactNode }) {
-  return (
-    <Card>
-      <CardContent className="py-12 text-center text-muted-foreground">{children}</CardContent>
-    </Card>
   );
 }
 

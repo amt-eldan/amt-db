@@ -10,9 +10,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { EditButton } from "@/components/lines/edit-button";
+import type { LineRow } from "@/db/queries";
 import { formatDate, formatILS, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { EditButton, type MonthlyComputedRow } from "./monthly-shared";
+
+/** A monthly ledger line with its sale value and profit precomputed. */
+export type MonthlyComputedRow = LineRow & {
+  sale: number | null;
+  profit: number | null;
+};
 
 export function MonthlySummaryTable({
   rows,

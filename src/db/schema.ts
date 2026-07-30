@@ -1,5 +1,6 @@
 import {
   boolean,
+  customType,
   date,
   integer,
   jsonb,
@@ -10,6 +11,11 @@ import {
   timestamp,
   unique,
 } from "drizzle-orm/pg-core";
+
+/** drizzle has no built-in bytea; the driver hands Buffers both ways. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 export const customers = pgTable("customers", {
   id: serial("id").primaryKey(),
@@ -75,6 +81,50 @@ export const stagedOrders = pgTable("staged_orders", {
     .defaultNow(),
 });
 
+/**
+ * Supplier invoices — the documents the buy prices come from. Added by hand or
+ * from a PDF that Claude read; either way one row per invoice, editable after
+ * the fact (no staging step, unlike orders, which fan out into many lines).
+ *
+ * `order_id` is the loose link back to what the invoice is for. It is nullable
+ * and `set null` on delete: an invoice is a record of money owed and must
+ * survive the order it referenced.
+ */
+export const supplierInvoices = pgTable(
+  "supplier_invoices",
+  {
+    id: serial("id").primaryKey(),
+    supplier: text("supplier").notNull(),
+    invoiceNumber: text("invoice_number").notNull(),
+    invoiceDate: date("invoice_date"),
+    poNumber: text("po_number"), // our PO as quoted by the supplier
+    orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+    amount: numeric("amount"), // invoice total as printed on the document
+    currency: text("currency").notNull().default("ILS"),
+    notes: text("notes"),
+    fileName: text("file_name"),
+    source: text("source").notNull().default("manual"), // 'manual' | 'extracted'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  // Same guard as orders: the pair identifies the document, so entering it
+  // twice fails instead of silently duplicating a payable.
+  (t) => [unique("supplier_invoices_number_supplier_unique").on(t.supplier, t.invoiceNumber)],
+);
+
+/**
+ * The uploaded PDF itself, in a table of its own so that listing invoices
+ * cannot accidentally select megabytes of file data.
+ */
+export const supplierInvoiceFiles = pgTable("supplier_invoice_files", {
+  invoiceId: integer("invoice_id")
+    .primaryKey()
+    .references(() => supplierInvoices.id, { onDelete: "cascade" }),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  bytes: bytea("bytes").notNull(),
+});
+
 export const auditLog = pgTable("audit_log", {
   id: serial("id").primaryKey(),
   entity: text("entity").notNull(),
@@ -90,3 +140,4 @@ export type Customer = typeof customers.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderLine = typeof orderLines.$inferSelect;
 export type StagedOrder = typeof stagedOrders.$inferSelect;
+export type SupplierInvoice = typeof supplierInvoices.$inferSelect;

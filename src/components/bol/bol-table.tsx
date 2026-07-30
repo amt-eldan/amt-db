@@ -1,6 +1,7 @@
 "use client";
 
 import { Bot } from "lucide-react";
+import { EditButton } from "@/components/lines/edit-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -12,10 +13,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { LineRow } from "@/db/queries";
+import { hasBol } from "@/lib/bol";
 import { formatDate } from "@/lib/format";
-import { EditButton, hasBol } from "./monthly-shared";
 
-export function MonthlyBolTable({
+export function BolTable({
   rows,
   onEdit,
 }: {

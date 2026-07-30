@@ -71,6 +71,33 @@ export const manualFieldsInput = z.object({
     .transform((s) => (s ? s : null)),
 });
 
+/**
+ * One supplier invoice, as typed in the form or as read from a PDF. Supplier +
+ * invoice number are the identity of the document, so both are required; the
+ * rest of the fields may be filled in later.
+ */
+export const supplierInvoiceInput = z.object({
+  supplier: z.string().trim().min(1, "שם ספק חובה").max(200),
+  invoiceNumber: z.string().trim().min(1, "מספר חשבונית חובה").max(100),
+  invoiceDate: optionalIsoDate,
+  poNumber: optionalText,
+  orderId: z.number().int().positive().nullish().transform((v) => v ?? null),
+  amount: optionalNumeric,
+  currency: z
+    .string()
+    .trim()
+    .max(10)
+    .nullish()
+    .transform((s) => (s && s !== "" ? s.toUpperCase() : "ILS")),
+  notes: optionalText,
+});
+
+export const supplierInvoiceUpdate = supplierInvoiceInput.extend({
+  id: z.number().int().positive(),
+});
+
+export type SupplierInvoiceInput = z.infer<typeof supplierInvoiceInput>;
+
 /** Payload accepted by POST /api/staged (from the external OCR pipeline). */
 export const stagedPayload = z.object({
   customer: z.string().trim().min(1),

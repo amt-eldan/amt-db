@@ -88,6 +88,7 @@ export async function createOrder(input: OrderInput): Promise<ActionResult> {
     revalidatePath("/");
     revalidatePath("/intake");
     revalidatePath("/monthly");
+    revalidatePath("/bol");
     return { ok: true, message: `הזמנה ${data.orderNumber} נוספה למעקב` };
   } catch (e) {
     if (e instanceof DuplicateOrderError) {
@@ -153,6 +154,7 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
   await applyLineFields(existing, toWrite);
   revalidatePath("/");
   revalidatePath("/monthly");
+  revalidatePath("/bol");
   return { ok: true, message: "השורה עודכנה" };
 }
 
@@ -164,6 +166,8 @@ export async function setLineOpen(lineId: number, isOpen: boolean): Promise<Acti
     .where(eq(orderLines.id, lineId));
   await audit("order_line", lineId, isOpen ? "reopen" : "close");
   revalidatePath("/");
+  revalidatePath("/monthly");
+  revalidatePath("/bol");
   return { ok: true, message: isOpen ? "השורה נפתחה מחדש" : "השורה נסגרה" };
 }
 
@@ -187,5 +191,6 @@ export async function deleteLine(lineId: number): Promise<ActionResult> {
   await audit("order_line", lineId, "delete", { pn: existing.pn, orderId: existing.orderId });
   revalidatePath("/");
   revalidatePath("/monthly");
+  revalidatePath("/bol");
   return { ok: true, message: "השורה נמחקה" };
 }
