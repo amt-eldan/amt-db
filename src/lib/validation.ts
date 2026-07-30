@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { MANUAL_STATUSES } from "./status";
 
+/** MoD orders: 10 digits starting with 444 → the customer is the purchasing-group number. */
+export function isModOrderNumber(orderNumber: string): boolean {
+  return /^444\d{7}$/.test(orderNumber.trim());
+}
+
 const optionalText = z
   .string()
   .trim()

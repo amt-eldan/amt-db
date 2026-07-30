@@ -1,0 +1,379 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod";
+import { parseDotDate } from "./format";
+import { isModOrderNumber, stagedPayload } from "./validation";
+
+/**
+ * A purchase order extracted from a PDF by Claude, shaped for the same
+ * `payload` jsonb that the external OCR pipeline writes (minus `sourceFile`,
+ * which the route fills in from the uploaded file name). `sourceFormat` is
+ * decided in code from the order number, never by the model.
+ */
+export type ExtractedOrder = Omit<z.input<typeof stagedPayload>, "sourceFile">;
+
+export type ExtractResult =
+  | { ok: true; order: ExtractedOrder; warnings: string[] }
+  | { ok: false; error: string };
+
+/** תוספת שמוצעת בכל הודעת כשל — המשתמש תמיד יכול ליפול חזרה להזנה ידנית. */
+const MANUAL_FALLBACK = " ניתן להזין את ההזמנה ידנית בטופס שבתחתית העמוד.";
+
+// ---------------------------------------------------------------------------
+// Pure normalization (exported for the unit test — no API calls, `today`
+// injected exactly like src/lib/status.ts so date-range checks are deterministic)
+// ---------------------------------------------------------------------------
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/** string → trimmed value, or null for empty / non-string. */
+function str(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t === "" ? null : t;
+}
+
+/**
+ * number → itself (if finite); string → strip ₪ $ commas and whitespace,
+ * then parseFloat. Returns `number | null`, consistent with the pipeline
+ * payload documented in the README (numeric line values arrive as numbers).
+ */
+function num(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const cleaned = v.replace(/[₪$,\s]/g, "");
+    if (cleaned === "") return null;
+    const n = parseFloat(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Real calendar date behind a yyyy-mm-dd string (rejects 2026-02-31 etc.). */
+function isRealCalendarDate(iso: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return (
+    dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
+  );
+}
+
+/**
+ * ISO (yyyy-mm-dd, real date) as-is; otherwise try parseDotDate; otherwise
+ * null and a warning that the original was dropped. A missing value returns
+ * null silently — "no date at all" is handled by the caller.
+ */
+function isoDate(v: unknown, label: string, warnings: string[]): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (s === "") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && isRealCalendarDate(s)) return s;
+  const parsed = parseDotDate(s);
+  if (parsed && isRealCalendarDate(parsed)) return parsed;
+  warnings.push(`${label}: התאריך "${s}" לא זוהה כתאריך תקין והושמט`);
+  return null;
+}
+
+/** year within 2000..today+5y — anything else deserves a human glance. */
+function dateInRange(iso: string, today: Date): boolean {
+  const year = Number(iso.slice(0, 4));
+  return year >= 2000 && year <= today.getFullYear() + 5;
+}
+
+/** en-US thousands + 2 decimals, e.g. 3355.8 → "3,355.80". */
+function fmtAmount(n: number): string {
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+/**
+ * Pure. Turns the model's raw tool input into an ExtractedOrder plus a list of
+ * Hebrew warnings for anything a human should double-check. Exported for the
+ * unit test; `today` is injected so the date-range check is testable.
+ */
+export function normalizeExtractedOrder(
+  raw: unknown,
+  fileName: string,
+  today: Date = new Date(),
+): { order: ExtractedOrder; warnings: string[] } {
+  const obj = asRecord(raw);
+  const warnings: string[] = [];
+
+  // Model-emitted warnings come first; local checks append to them.
+  if (Array.isArray(obj.warnings)) {
+    for (const w of obj.warnings) if (typeof w === "string" && w.trim()) warnings.push(w.trim());
+  }
+
+  const customer = str(obj.customer);
+  const customerNote = str(obj.customerNote);
+  const orderNumber = str(obj.orderNumber);
+  const isMod = isModOrderNumber(orderNumber ?? "");
+
+  // Header date. Absent → prominent warning (never fabricate — StagedCard lets
+  // the reviewer fill it in). Present but out of range → warning.
+  const orderDate = isoDate(obj.orderDate, "תאריך הזמנה", warnings);
+  if (!orderDate) {
+    warnings.push("לא זוהה תאריך הזמנה — יש למלא ידנית לפני אישור");
+  } else if (!dateInRange(orderDate, today)) {
+    warnings.push(
+      `תאריך ההזמנה ${orderDate} חורג מהטווח הצפוי (2000 עד ${today.getFullYear() + 5})`,
+    );
+  }
+
+  const rawLines = Array.isArray(obj.lines) ? obj.lines : [];
+  const lines = rawLines.map((rl, i) => {
+    const line = asRecord(rl);
+    const n = i + 1;
+    const pn = str(line.pn);
+    const qty = num(line.qty);
+    const contractDueDate = isoDate(line.contractDueDate, `שורה ${n} — תאריך אספקה`, warnings);
+    if (contractDueDate && !dateInRange(contractDueDate, today)) {
+      warnings.push(`שורה ${n}: תאריך האספקה ${contractDueDate} חורג מהטווח הצפוי`);
+    }
+    if (!pn) warnings.push(`שורה ${n}: חסר מק"ט יצרן (P/N) — יש לבדוק`);
+    if (qty === null || qty === 0) warnings.push(`שורה ${n}: כמות חסרה או אפס — יש לבדוק`);
+    return {
+      pn,
+      sku: str(line.sku),
+      qty,
+      unitPrice: num(line.unitPrice),
+      contractDueDate,
+      notes: str(line.notes),
+    };
+  });
+
+  // Sanity check: document total vs sum(qty × unitPrice). Warning, not failure.
+  const documentTotal = num(obj.documentTotal);
+  if (documentTotal !== null) {
+    const computed = lines.reduce((s, l) => s + (l.qty ?? 0) * (l.unitPrice ?? 0), 0);
+    if (Math.abs(documentTotal - computed) > 1) {
+      warnings.push(
+        `סה"כ לא תואם: ${fmtAmount(documentTotal)} במסמך מול ${fmtAmount(computed)} מחושב`,
+      );
+    }
+  }
+
+  // Foreign currency is never converted here — flag it.
+  const currency = str(obj.documentCurrency);
+  if (currency && !/^(ils|nis|₪|שקל|ש"ח|שח)$/i.test(currency)) {
+    warnings.push(`המטבע במסמך (${currency}) אינו שקל — לא בוצעה המרה, יש לבדוק ידנית`);
+  }
+
+  // MoD order but the customer isn't a short purchasing-group number.
+  if (isMod && customer && !/^\d{1,4}$/.test(customer)) {
+    warnings.push(
+      `הזמנת משהב"ט — הלקוח "${customer}" אינו מספר קבוצת רכש; יש לתקן למספר קצר (למשל 134)`,
+    );
+  }
+
+  // PMO number with something stuck after it — likely a scanner suffix. Warn
+  // only; auto-trimming could corrupt a genuine number.
+  if (orderNumber && /^\d{4}P\d{5}/.test(orderNumber) && orderNumber.length > 10) {
+    warnings.push(
+      `מספר ההזמנה "${orderNumber}" ארוך מתבנית PMO הרגילה — ייתכן שנדבקה סיומת סורק, יש לוודא`,
+    );
+  }
+
+  const order: ExtractedOrder = {
+    customer: customer ?? "",
+    customerNote,
+    orderNumber: orderNumber ?? "",
+    orderDate,
+    sourceFormat: isMod ? "mod" : "standard",
+    lines,
+  };
+
+  return { order, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Extraction via the Messages API
+// ---------------------------------------------------------------------------
+
+const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purchase Orders) של חברת אלקטרוניקה ישראלית. המסמך המצורף הוא PDF של הזמנה. עליך להחזיר את הנתונים דרך הכלי submit_order בלבד. אל תמציא נתונים — שדה שלא נקרא בבירור, השמט אותו.
+
+הפורמטים שנראו בשטח: הזמנת רכש ממשלתית דיגיטלית (משרד ראש הממשלה), אותה הזמנה כשהיא סרוקה עם חתימות יד, פורטל משרד הביטחון, ו-PO ממערכות ERP של לקוחות (כגון ERPNext). ייתכנו גם פורמטים שלא נראו עדיין — התאם את עצמך.
+
+מספר הזמנה (orderNumber):
+- הזמנת משרד ראש הממשלה בפורמט כמו 0226P02772 (4 ספרות, האות P, 5 ספרות).
+- מלכודת: אותו PDF מכיל לעיתים גם "בקשה להצעת מחיר" עם מספר אחר (למשל 26003501). חלץ את מספר ההזמנה מעמודי ההזמנה עצמה, לא מעמוד בקשת הצעת המחיר.
+- התעלם מסיומות סורק בשם הקובץ: אם שם הקובץ הוא 0226P02772001.pdf מספר ההזמנה הוא 0226P02772.
+- הזמנת משרד הביטחון: 10 ספרות שמתחילות ב-444.
+
+לקוח (customer):
+- בדרך כלל מבלוק "לכבוד" או שם הקונה.
+- הזמנת משרד הביטחון (מספר שמתחיל ב-444): הלקוח הוא מספר קבוצת הרכש (למשל 134, 131, 135, 137), שאותו משחזרים מכתובת האימייל של הרוכש. לעולם אל תכתוב "משרד הביטחון" בשדה customer — את התיאור המילולי כתוב ב-customerNote.
+
+שורות (lines):
+- pn = מק"ט היצרן (Manufacturer Part Number), למשל STM32L432KBU6.
+- sku = מק"ט הלקוח / מספר קטלוגי, למשל 345056.
+- unitPrice = מחיר ליחידה אחת, לפני מע"מ. לא סכום השורה הכולל ולא כולל מע"מ. אם במסמך מופיע רק סכום שורה — חלק בכמות כדי לקבל מחיר ליחידה.
+- qty = כמות.
+- contractDueDate = מועד האספקה הנדרש.
+- תיאור המוצר ושם היצרן → notes של השורה.
+
+בקרת שפיות (לשדות documentTotal ו-documentCurrency בלבד):
+- documentTotal = הסכום הכולל של ההזמנה כפי שמופיע במסמך (מספר, לפני מע"מ אם אפשר), לצורך בדיקת התאמה מול סכום השורות.
+- documentCurrency = המטבע של המסמך (למשל ILS, USD, EUR).
+
+כללים כלליים:
+- תאריכים: החזר בפורמט ISO בלבד, yyyy-mm-dd. המר פורמטים כמו 15.7.2026, ‏15/7/2026 וגם 15/7/26.
+- מספרים: הסר סימני ₪ ו-$ ופסיקי אלפים. אם המטבע זר — אל תמיר לשקלים, השאר את המספר כמו שהוא והוסף warning.
+- אם המסמך אינו הזמנת רכש — החזר lines ריק והוסף warning שמסביר מה המסמך כן (הצעת מחיר, חשבונית, וכו').
+- אם המסמך מכיל כמה הזמנות — חלץ את ההזמנה הראשית והוסף warning על כך.
+- warnings: כתוב בעברית כל דבר שדורש עין אנושית (שדה מטושטש, נתון שלא היית בטוח בו, אי-התאמה וכו').`;
+
+const SUBMIT_ORDER_TOOL: Anthropic.Tool = {
+  name: "submit_order",
+  description:
+    "מחזיר את הנתונים המחולצים מהזמנת הרכש. השמט כל שדה שלא נקרא בבירור מהמסמך — אל תמציא. lines ו-warnings תמיד נדרשים (גם אם ריקים).",
+  input_schema: {
+    type: "object",
+    properties: {
+      customer: {
+        type: "string",
+        description:
+          'שם הלקוח או מספר קבוצת הרכש. בהזמנת משהב"ט (444) — מספר קבוצת הרכש, לא "משרד הביטחון".',
+      },
+      customerNote: {
+        type: "string",
+        description: "תיאור מילולי נוסף על הלקוח / קבוצת הרכש, אם קיים.",
+      },
+      orderNumber: {
+        type: "string",
+        description: "מספר ההזמנה, ללא סיומות סורק.",
+      },
+      orderDate: {
+        type: "string",
+        description: "תאריך ההזמנה בפורמט yyyy-mm-dd.",
+      },
+      documentTotal: {
+        type: "number",
+        description: "הסכום הכולל של ההזמנה כפי שמופיע במסמך, לבקרת שפיות.",
+      },
+      documentCurrency: {
+        type: "string",
+        description: "מטבע המסמך (ILS, USD, EUR וכו').",
+      },
+      lines: {
+        type: "array",
+        description: "שורות ההזמנה.",
+        items: {
+          type: "object",
+          properties: {
+            pn: { type: "string", description: "מק\"ט יצרן (Manufacturer P/N)." },
+            sku: { type: "string", description: "מק\"ט לקוח / קטלוגי." },
+            notes: { type: "string", description: "תיאור המוצר ושם היצרן." },
+            qty: { type: "number", description: "כמות." },
+            unitPrice: {
+              type: "number",
+              description: "מחיר ליחידה אחת, לפני מע\"מ.",
+            },
+            contractDueDate: {
+              type: "string",
+              description: "מועד אספקה נדרש, yyyy-mm-dd.",
+            },
+          },
+        },
+      },
+      warnings: {
+        type: "array",
+        description: "אזהרות בעברית לכל דבר שדורש בדיקה אנושית.",
+        items: { type: "string" },
+      },
+    },
+    required: ["lines", "warnings"],
+  },
+};
+
+/**
+ * Send a base64 PDF to Claude and return a structured order (or a Hebrew error
+ * message, all of which suggest the manual-entry fallback). Runs on the server
+ * only — reads ANTHROPIC_API_KEY from the environment.
+ */
+export async function extractOrderFromPdf(
+  pdfBase64: string,
+  fileName: string,
+): Promise<ExtractResult> {
+  // timeout is in MILLISECONDS (SDK default is 10 minutes). Without this the
+  // request would outlive Vercel's 60s function limit and get killed with no
+  // clean error. maxRetries: 0 because wall-clock = timeout × (retries + 1).
+  const anthropic = new Anthropic({ maxRetries: 0, timeout: 50_000 });
+
+  let message: Anthropic.Message;
+  try {
+    message = await anthropic.messages.create({
+      model: process.env.EXTRACT_MODEL ?? "claude-sonnet-5",
+      max_tokens: 16000,
+      thinking: { type: "disabled" },
+      system: SYSTEM_PROMPT,
+      tools: [SUBMIT_ORDER_TOOL],
+      tool_choice: { type: "tool", name: "submit_order" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: pdfBase64,
+              },
+            },
+            {
+              type: "text",
+              text: `חלץ את פרטי ההזמנה מהמסמך המצורף (שם הקובץ: ${fileName}) והחזר אותם דרך הכלי submit_order.`,
+            },
+          ],
+        },
+      ],
+    });
+  } catch (err) {
+    // Specific-first: AuthenticationError and RateLimitError extend APIError but
+    // not APIConnectionError; APIConnectionError (incl. timeouts) extends APIError
+    // and must be checked before it.
+    if (err instanceof Anthropic.AuthenticationError) {
+      return { ok: false, error: `שגיאת אימות מול Claude — בדוק את ANTHROPIC_API_KEY.${MANUAL_FALLBACK}` };
+    }
+    if (err instanceof Anthropic.RateLimitError) {
+      return { ok: false, error: `Claude עמוס כרגע (מגבלת קצב) — נסה שוב בעוד רגע.${MANUAL_FALLBACK}` };
+    }
+    if (err instanceof Anthropic.APIConnectionError) {
+      return { ok: false, error: `החילוץ לקח יותר מדי זמן או שנכשל החיבור ל-Claude.${MANUAL_FALLBACK}` };
+    }
+    if (err instanceof Anthropic.APIError) {
+      return { ok: false, error: `שגיאה מ-Claude בזמן החילוץ.${MANUAL_FALLBACK}` };
+    }
+    return { ok: false, error: `שגיאה לא צפויה בזמן החילוץ.${MANUAL_FALLBACK}` };
+  }
+
+  if (message.stop_reason === "max_tokens") {
+    return { ok: false, error: `המסמך ארוך מדי — פלט החילוץ נקטע (JSON חלקי).${MANUAL_FALLBACK}` };
+  }
+  if (message.stop_reason === "refusal") {
+    return { ok: false, error: `החילוץ נדחה על ידי המודל.${MANUAL_FALLBACK}` };
+  }
+
+  const toolUse = message.content.find((block) => block.type === "tool_use");
+  if (toolUse?.type !== "tool_use") {
+    return { ok: false, error: `לא התקבל פלט מובנה מהחילוץ.${MANUAL_FALLBACK}` };
+  }
+
+  const { order, warnings } = normalizeExtractedOrder(toolUse.input, fileName);
+
+  if (order.lines.length === 0) {
+    const explanation = warnings.length ? ` (${warnings.join("; ")})` : "";
+    return { ok: false, error: `לא זוהתה הזמנת רכש במסמך${explanation}.${MANUAL_FALLBACK}` };
+  }
+
+  return { ok: true, order, warnings };
+}
