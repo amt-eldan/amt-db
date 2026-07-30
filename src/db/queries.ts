@@ -2,7 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customers, orderLines, orders, stagedOrders } from "@/db/schema";
 
-export interface OpenLineRow {
+export interface LineRow {
   lineId: number;
   orderId: number;
   orderNumber: string;
@@ -31,36 +31,43 @@ export interface OpenLineRow {
   createdAt: Date;
 }
 
-export async function getLines(includeArchived: boolean): Promise<OpenLineRow[]> {
+/**
+ * Every column a line editor may write, shared by the open-orders list and the
+ * monthly ledger: both hand the same row to the edit sheet, and a field missing
+ * from the row would be saved back as empty.
+ */
+const lineColumns = {
+  lineId: orderLines.id,
+  orderId: orders.id,
+  orderNumber: orders.orderNumber,
+  orderDate: orders.orderDate,
+  customerId: customers.id,
+  customerName: customers.name,
+  customerNote: customers.note,
+  pn: orderLines.pn,
+  sku: orderLines.sku,
+  qty: orderLines.qty,
+  unitPrice: orderLines.unitPrice,
+  poNumber: orderLines.poNumber,
+  supplier: orderLines.supplier,
+  buyPrice: orderLines.buyPrice,
+  shippingCost: orderLines.shippingCost,
+  contractDueDate: orderLines.contractDueDate,
+  deliveryUpdate: orderLines.deliveryUpdate,
+  paymentMethod: orderLines.paymentMethod,
+  bol: orderLines.bol,
+  carrier: orderLines.carrier,
+  bolSource: orderLines.bolSource,
+  bolConfidence: orderLines.bolConfidence,
+  notes: orderLines.notes,
+  manualStatus: orderLines.manualStatus,
+  isOpen: orderLines.isOpen,
+  createdAt: orderLines.createdAt,
+};
+
+export async function getLines(includeArchived: boolean): Promise<LineRow[]> {
   const rows = await db
-    .select({
-      lineId: orderLines.id,
-      orderId: orders.id,
-      orderNumber: orders.orderNumber,
-      orderDate: orders.orderDate,
-      customerId: customers.id,
-      customerName: customers.name,
-      customerNote: customers.note,
-      pn: orderLines.pn,
-      sku: orderLines.sku,
-      qty: orderLines.qty,
-      unitPrice: orderLines.unitPrice,
-      poNumber: orderLines.poNumber,
-      supplier: orderLines.supplier,
-      buyPrice: orderLines.buyPrice,
-      shippingCost: orderLines.shippingCost,
-      contractDueDate: orderLines.contractDueDate,
-      deliveryUpdate: orderLines.deliveryUpdate,
-      paymentMethod: orderLines.paymentMethod,
-      bol: orderLines.bol,
-      carrier: orderLines.carrier,
-      bolSource: orderLines.bolSource,
-      bolConfidence: orderLines.bolConfidence,
-      notes: orderLines.notes,
-      manualStatus: orderLines.manualStatus,
-      isOpen: orderLines.isOpen,
-      createdAt: orderLines.createdAt,
-    })
+    .select(lineColumns)
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
     .innerJoin(customers, eq(orders.customerId, customers.id))
@@ -69,37 +76,9 @@ export async function getLines(includeArchived: boolean): Promise<OpenLineRow[]>
   return rows;
 }
 
-export interface MonthlyRow {
-  lineId: number;
-  orderNumber: string;
-  orderDate: string | null;
-  customerName: string;
-  pn: string | null;
-  supplier: string | null;
-  qty: string | null;
-  unitPrice: string | null;
-  buyPrice: string | null;
-  shippingCost: string | null;
-  bol: string | null;
-  notes: string | null;
-}
-
-export async function getMonthlyLines(year: number, month: number): Promise<MonthlyRow[]> {
+export async function getMonthlyLines(year: number, month: number): Promise<LineRow[]> {
   const rows = await db
-    .select({
-      lineId: orderLines.id,
-      orderNumber: orders.orderNumber,
-      orderDate: orders.orderDate,
-      customerName: customers.name,
-      pn: orderLines.pn,
-      supplier: orderLines.supplier,
-      qty: orderLines.qty,
-      unitPrice: orderLines.unitPrice,
-      buyPrice: orderLines.buyPrice,
-      shippingCost: orderLines.shippingCost,
-      bol: orderLines.bol,
-      notes: orderLines.notes,
-    })
+    .select(lineColumns)
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
     .innerJoin(customers, eq(orders.customerId, customers.id))

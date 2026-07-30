@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Download } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -13,31 +13,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import type { MonthlyRow } from "@/db/queries";
-import { formatDate, formatILS, formatMonth, formatNumber } from "@/lib/format";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { LineRow } from "@/db/queries";
+import { formatDate, formatILS, formatMonth } from "@/lib/format";
 import { lineProfit, lineValue } from "@/lib/profit";
 import { cn } from "@/lib/utils";
+import { MonthlyBolTable } from "./monthly-bol-table";
+import { hasBol, type MonthlyComputedRow } from "./monthly-shared";
+import { MonthlySummaryTable } from "./monthly-summary-table";
+
+type Tab = "summary" | "bol";
 
 export function MonthlyView({
   rows,
   months,
   selected,
 }: {
-  rows: MonthlyRow[];
+  rows: LineRow[];
   months: string[];
   selected: string;
 }) {
   const router = useRouter();
+  const [tab, setTab] = useState<Tab>("summary");
+  const [editing, setEditing] = useState<LineRow | null>(null);
 
-  const computed = useMemo(
+  const computed = useMemo<MonthlyComputedRow[]>(
     () =>
       rows.map((row) => ({
         ...row,
@@ -59,31 +59,48 @@ export function MonthlyView({
     return { sale, profit, pendingCount };
   }, [computed]);
 
+  const bolCount = useMemo(() => computed.filter(hasBol).length, [computed]);
+
   function exportCsv() {
-    const headers = [
-      "לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "כמות",
-      "מחיר מכירה ליח'", "מחיר קנייה ליח'", "משלוח", "סך מכירה", "רווח", "שטר מטען", "הערות",
-    ];
+    const headers =
+      tab === "bol"
+        ? ["לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "שטר מטען", "חברת הובלה", "מקור"]
+        : [
+            "לקוח", "מס' הזמנה", "תאריך", "P/N", "ספק", "כמות",
+            "מחיר מכירה ליח'", "מחיר קנייה ליח'", "משלוח", "סך מכירה", "רווח", "שטר מטען", "הערות",
+          ];
     const escape = (v: string | number | null | undefined) => {
       const s = v === null || v === undefined ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = computed.map((row) =>
-      [
-        row.customerName,
-        row.orderNumber,
-        formatDate(row.orderDate),
-        row.pn,
-        row.supplier,
-        row.qty,
-        row.unitPrice,
-        row.buyPrice,
-        row.shippingCost,
-        row.sale?.toFixed(2),
-        row.profit === null ? "ממתין" : row.profit.toFixed(2),
-        row.bol,
-        row.notes,
-      ]
+      (tab === "bol"
+        ? [
+            row.customerName,
+            row.orderNumber,
+            formatDate(row.orderDate),
+            row.pn,
+            row.supplier,
+            row.bol,
+            row.carrier,
+            hasBol(row) ? (row.bolSource === "auto" ? "אוטומטי" : "ידני") : "",
+          ]
+        : [
+            row.customerName,
+            row.orderNumber,
+            formatDate(row.orderDate),
+            row.pn,
+            row.supplier,
+            row.qty,
+            row.unitPrice,
+            row.buyPrice,
+            row.shippingCost,
+            row.sale?.toFixed(2),
+            row.profit === null ? "ממתין" : row.profit.toFixed(2),
+            row.bol,
+            row.notes,
+          ]
+      )
         .map(escape)
         .join(","),
     );
@@ -92,7 +109,7 @@ export function MonthlyView({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `סיכום-${selected}.csv`;
+    a.download = `${tab === "bol" ? "שטרי-מטען" : "סיכום"}-${selected}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -137,86 +154,45 @@ export function MonthlyView({
         <TotalCard label="שורות" value={String(rows.length)} className="col-span-2 md:col-span-1" />
       </div>
 
-      {rows.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            אין שורות סגורות בחודש {formatMonth(selected)}.
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          {/* Desktop table */}
-          <div className="hidden md:block rounded-lg border overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>לקוח</TableHead>
-                  <TableHead>מס' הזמנה</TableHead>
-                  <TableHead>תאריך</TableHead>
-                  <TableHead>P/N</TableHead>
-                  <TableHead>ספק</TableHead>
-                  <TableHead>כמות</TableHead>
-                  <TableHead>מכירה ליח&apos;</TableHead>
-                  <TableHead>קנייה ליח&apos;</TableHead>
-                  <TableHead>סך מכירה</TableHead>
-                  <TableHead>רווח</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {computed.map((row) => (
-                  <TableRow key={row.lineId}>
-                    <TableCell>{row.customerName}</TableCell>
-                    <TableCell dir="ltr" className="text-end">{row.orderNumber}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">
-                      {formatDate(row.orderDate)}
-                    </TableCell>
-                    <TableCell dir="ltr" className="text-end">{row.pn ?? "—"}</TableCell>
-                    <TableCell>{row.supplier ?? "—"}</TableCell>
-                    <TableCell dir="ltr" className="text-end">{formatNumber(row.qty)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.unitPrice)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.buyPrice)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.sale)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">
-                      {row.profit === null ? (
-                        <Badge variant="outline" className="text-muted-foreground">ממתין</Badge>
-                      ) : (
-                        <span className={cn(row.profit < 0 && "text-red-600")}>{formatILS(row.profit)}</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-4">
+        <TabsList>
+          <TabsTrigger value="summary">סיכום</TabsTrigger>
+          <TabsTrigger value="bol">שטרי מטען</TabsTrigger>
+        </TabsList>
 
-          {/* Mobile cards */}
-          <div className="md:hidden flex flex-col gap-2">
-            {computed.map((row) => (
-              <Card key={row.lineId} className="py-3">
-                <CardContent className="px-3 flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium truncate" dir="ltr">{row.pn ?? row.orderNumber}</span>
-                    {row.profit === null ? (
-                      <Badge variant="outline">ממתין</Badge>
-                    ) : (
-                      <span className={cn("text-sm", row.profit < 0 && "text-red-600")} dir="ltr">
-                        {formatILS(row.profit)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span>{row.customerName}</span>
-                    <span dir="ltr" className="text-start">{row.orderNumber}</span>
-                    <span>ספק: {row.supplier ?? "—"}</span>
-                    <span>מכירה: <bdi dir="ltr">{formatILS(row.sale)}</bdi></span>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </>
-      )}
+        <TabsContent value="summary" className="flex flex-col gap-2">
+          {computed.length === 0 ? (
+            <EmptyState>אין שורות סגורות בחודש {formatMonth(selected)}.</EmptyState>
+          ) : (
+            <MonthlySummaryTable rows={computed} onEdit={setEditing} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="bol" className="flex flex-col gap-2">
+          {computed.length === 0 ? (
+            <EmptyState>אין שורות סגורות בחודש {formatMonth(selected)}.</EmptyState>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                {bolCount} מתוך {computed.length} שורות עם שטר מטען
+                {bolCount < computed.length && ` · ${computed.length - bolCount} חסרות`}
+              </p>
+              <MonthlyBolTable rows={computed} onEdit={setEditing} />
+            </>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      <LineEditSheet line={editing} onClose={() => setEditing(null)} />
     </div>
+  );
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <Card>
+      <CardContent className="py-12 text-center text-muted-foreground">{children}</CardContent>
+    </Card>
   );
 }
 
