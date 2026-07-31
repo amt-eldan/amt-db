@@ -126,8 +126,8 @@ export function UploadInvoiceButton() {
       >
         <FileText className="size-6 text-muted-foreground" />
         <p className="text-sm text-muted-foreground">
-          גרור לכאן קובץ PDF של חשבונית ספק, או בחר קובץ. Claude מחלץ את הספק, מספר החשבונית,
-          התאריך והסכום — והקובץ נשמר לצפייה.
+          גרור לכאן קובץ PDF של חשבונית ספק, או בחר קובץ. הספק, מספר החשבונית, התאריך והסכום
+          מחולצים אוטומטית מהמסמך — והקובץ נשמר לצפייה.
         </p>
         <Button
           type="button"

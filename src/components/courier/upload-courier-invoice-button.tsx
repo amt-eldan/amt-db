@@ -132,8 +132,9 @@ export function UploadCourierInvoiceButton() {
       >
         <FileText className="size-6 text-muted-foreground" />
         <p className="text-sm text-muted-foreground">
-          גרור לכאן קובץ PDF של חשבונית בלדר, או בחר קובץ. Claude מחלץ את הבלדר, מספר החשבונית
-          והמשלוחים — וכל משלוח מקושר לשורה לפי מספר שטר המטען. החשבונית תמתין לאישור שלך.
+          גרור לכאן קובץ PDF של חשבונית בלדר, או בחר קובץ. הבלדר, מספר החשבונית והמשלוחים
+          מחולצים אוטומטית מהמסמך, וכל משלוח מקושר לשורה לפי מספר שטר המטען. החשבונית תמתין
+          לאישור שלך.
         </p>
         <Button
           type="button"

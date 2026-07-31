@@ -125,7 +125,7 @@ export function UploadOrderButton() {
       >
         <FileText className="size-6 text-muted-foreground" />
         <p className="text-sm text-muted-foreground">
-          גרור לכאן קובץ PDF של הזמנה, או בחר קובץ. החילוץ נעשה על ידי Claude וממתין לאישורך.
+          גרור לכאן קובץ PDF של הזמנה, או בחר קובץ. הנתונים מחולצים אוטומטית מהמסמך וממתינים לאישורך.
         </p>
         <Button
           type="button"

@@ -277,16 +277,16 @@ export async function extractOrderFromPdf(
     // not APIConnectionError; APIConnectionError (incl. timeouts) extends APIError
     // and must be checked before it.
     if (err instanceof Anthropic.AuthenticationError) {
-      return { ok: false, error: `שגיאת אימות מול Claude — בדוק את ANTHROPIC_API_KEY.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שגיאת אימות בשירות החילוץ — יש לבדוק את מפתח ה-API.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.RateLimitError) {
-      return { ok: false, error: `Claude עמוס כרגע (מגבלת קצב) — נסה שוב בעוד רגע.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שירות החילוץ עמוס כרגע (מגבלת קצב) — נסה שוב בעוד רגע.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.APIConnectionError) {
-      return { ok: false, error: `החילוץ לקח יותר מדי זמן או שנכשל החיבור ל-Claude.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `החילוץ לקח יותר מדי זמן או שנכשל החיבור לשירות החילוץ.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.APIError) {
-      return { ok: false, error: `שגיאה מ-Claude בזמן החילוץ.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שגיאה בשירות החילוץ.${MANUAL_FALLBACK}` };
     }
     return { ok: false, error: `שגיאה לא צפויה בזמן החילוץ.${MANUAL_FALLBACK}` };
   }
@@ -295,7 +295,7 @@ export async function extractOrderFromPdf(
     return { ok: false, error: `המסמך ארוך מדי — פלט החילוץ נקטע (JSON חלקי).${MANUAL_FALLBACK}` };
   }
   if (message.stop_reason === "refusal") {
-    return { ok: false, error: `החילוץ נדחה על ידי המודל.${MANUAL_FALLBACK}` };
+    return { ok: false, error: `החילוץ נדחה.${MANUAL_FALLBACK}` };
   }
 
   const toolUse = message.content.find((block) => block.type === "tool_use");
