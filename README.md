@@ -59,8 +59,13 @@ npx vercel --prod
 הקוד עלה, `supplier_invoices` לא נוצרה, והעמוד החזיר "בעיה בחיבור למסד הנתונים").
 
 בלי `DATABASE_URL` הסקריפט מדלג בשקט, כך ש-build מקומי או preview בלי משתני סביבה לא נשבר.
-אם deploy נכשל עם `relation ... already exists`, סימן שהטבלאות ב-Neon נוצרו בלי רישום המיגרציות
-(`drizzle.__drizzle_migrations`) — צריך להשלים שם את השורות של המיגרציות שכבר הוחלו.
+
+**המיגרציות כתובות כך שאפשר להריץ אותן על מסד שהסכימה שלו כבר עודכנה בלי שהמיגרציה נרשמה**
+(מה שקורה אחרי `drizzle-kit push` או שינוי ידני): כל `CREATE TABLE` הוא `IF NOT EXISTS`, כל
+`ADD COLUMN` הוא `IF NOT EXISTS`, וכל `ADD CONSTRAINT` עטוף ב-`DO $$ ... EXCEPTION WHEN
+duplicate_object $$` (ל-Postgres אין `ADD CONSTRAINT IF NOT EXISTS`). זה מה שמאפשר למסד להתיישר
+מעצמו: כל אובייקט שכבר קיים מדולג, מה שחסר נוצר, והמיגרציות נרשמות. מיגרציה חדשה מ-`db:generate`
+מגיעה בלי ההגנות האלה — אם היא נוגעת בטבלה שקיימת בפרודקשן מ-push, כדאי להוסיף אותן.
 
 ואז מגדירים את משתני הסביבה ב-Vercel (Project → Settings → Environment Variables) ועושים redeploy. לחלופין:
 

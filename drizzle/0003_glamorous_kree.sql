@@ -1,4 +1,4 @@
-CREATE TABLE "courier_invoice_allocations" (
+CREATE TABLE IF NOT EXISTS "courier_invoice_allocations" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"invoice_id" integer NOT NULL,
 	"line_id" integer NOT NULL,
@@ -9,14 +9,14 @@ CREATE TABLE "courier_invoice_allocations" (
 	CONSTRAINT "courier_allocations_invoice_line_unique" UNIQUE("invoice_id","line_id")
 );
 --> statement-breakpoint
-CREATE TABLE "courier_invoice_files" (
+CREATE TABLE IF NOT EXISTS "courier_invoice_files" (
 	"invoice_id" integer PRIMARY KEY NOT NULL,
 	"mime_type" text NOT NULL,
 	"size_bytes" integer NOT NULL,
 	"bytes" "bytea" NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "courier_invoices" (
+CREATE TABLE IF NOT EXISTS "courier_invoices" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"courier" text NOT NULL,
 	"invoice_number" text NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE "courier_invoices" (
 	CONSTRAINT "courier_invoices_number_courier_unique" UNIQUE("courier","invoice_number")
 );
 --> statement-breakpoint
-CREATE TABLE "staged_courier_invoices" (
+CREATE TABLE IF NOT EXISTS "staged_courier_invoices" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"payload" jsonb NOT NULL,
 	"file_name" text,
@@ -41,6 +41,17 @@ CREATE TABLE "staged_courier_invoices" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "courier_invoice_allocations" ADD CONSTRAINT "courier_invoice_allocations_invoice_id_courier_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."courier_invoices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "courier_invoice_allocations" ADD CONSTRAINT "courier_invoice_allocations_line_id_order_lines_id_fk" FOREIGN KEY ("line_id") REFERENCES "public"."order_lines"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "courier_invoice_files" ADD CONSTRAINT "courier_invoice_files_invoice_id_courier_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."courier_invoices"("id") ON DELETE cascade ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "courier_invoice_allocations" ADD CONSTRAINT "courier_invoice_allocations_invoice_id_courier_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."courier_invoices"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "courier_invoice_allocations" ADD CONSTRAINT "courier_invoice_allocations_line_id_order_lines_id_fk" FOREIGN KEY ("line_id") REFERENCES "public"."order_lines"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "courier_invoice_files" ADD CONSTRAINT "courier_invoice_files_invoice_id_courier_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."courier_invoices"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;

@@ -21,6 +21,7 @@ import { neonConfig, Pool } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import ws from "ws";
+import { isAlreadyExists } from "../src/lib/pg-error";
 
 if (typeof WebSocket === "undefined") {
   neonConfig.webSocketConstructor = ws;
@@ -48,5 +49,15 @@ main().catch((error) => {
   // Non-zero on purpose: a failed migration must fail the deploy rather than
   // ship code whose tables do not exist.
   console.error("db:migrate — failed:", error);
+  if (isAlreadyExists(error)) {
+    console.error(
+      "\nThe database already contains something a migration creates, which means its schema " +
+        "was changed without the change being recorded in drizzle.__drizzle_migrations (a " +
+        "`drizzle-kit push`, or a statement run by hand). The migrations in ./drizzle are " +
+        "written to survive exactly that — every CREATE is IF NOT EXISTS and every ADD " +
+        "CONSTRAINT is guarded — so a migration that still fails this way is creating something " +
+        "a different hand created differently, and needs a look before it is re-run.",
+    );
+  }
   process.exit(1);
 });
