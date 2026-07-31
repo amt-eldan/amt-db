@@ -46,6 +46,7 @@ export async function createSupplierInvoice(input: unknown): Promise<ActionResul
     source: "manual",
   });
   revalidatePath("/invoices");
+  revalidatePath("/");
   return { ok: true, message: `חשבונית ${data.invoiceNumber} נוספה` };
 }
 
@@ -78,6 +79,7 @@ export async function updateSupplierInvoice(input: unknown): Promise<ActionResul
   }
   await audit("supplier_invoice", id, "update", diff);
   revalidatePath("/invoices");
+  revalidatePath("/");
   return { ok: true, message: "החשבונית עודכנה" };
 }
 
@@ -93,5 +95,6 @@ export async function deleteSupplierInvoice(id: number): Promise<ActionResult> {
     invoiceNumber: existing.invoiceNumber,
   });
   revalidatePath("/invoices");
+  revalidatePath("/");
   return { ok: true, message: "החשבונית נמחקה" };
 }

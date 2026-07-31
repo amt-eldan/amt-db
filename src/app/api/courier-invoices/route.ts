@@ -1,12 +1,13 @@
 import { revalidatePath } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { supplierInvoiceFiles, supplierInvoices } from "@/db/schema";
+import { stagedCourierInvoices } from "@/db/schema";
+import { getCourierLineOptions } from "@/db/queries";
 import { audit } from "@/lib/audit";
-import { extractInvoiceFromPdf } from "@/lib/extract-invoice";
-import { isUniqueViolation } from "@/lib/pg-error";
+import { matchShipmentsToLines } from "@/lib/courier-match";
+import { extractCourierInvoiceFromPdf } from "@/lib/extract-courier-invoice";
 import { requireSession } from "@/lib/require-session";
-import { supplierInvoiceInput } from "@/lib/validation";
+import { courierInvoiceDraft } from "@/lib/validation";
 
 export const runtime = "nodejs"; // Buffer
 export const maxDuration = 60; // extraction takes 10–40s; 60 is the Hobby max
@@ -15,10 +16,11 @@ export const maxDuration = 60; // extraction takes 10–40s; 60 is the Hobby max
 const MAX_BYTES = 4 * 1024 * 1024;
 
 /**
- * Manual supplier-invoice upload from /invoices: read the PDF with Claude and
- * save it as one invoice row plus the stored file. Unlike orders there is no
- * staging step — an invoice is a single editable row, so a wrong extraction is
- * fixed in place (or deleted) instead of being approved first.
+ * Courier-invoice upload from /courier: read the PDF with Claude, match every
+ * shipment on it to the line that carries the same tracking number, and park the
+ * result as *pending*. Nothing reaches courier_invoices here — a courier charge
+ * changes the profit of an order line, so it waits for a human to confirm the
+ * split (see actions/courier.ts → approveCourierInvoice).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -60,13 +62,37 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "הקובץ אינו PDF תקין" }, { status: 415 });
   }
 
-  const extracted = await extractInvoiceFromPdf(bytes.toString("base64"), file.name);
+  const extracted = await extractCourierInvoiceFromPdf(bytes.toString("base64"), file.name);
   if (!extracted.ok) {
     return NextResponse.json({ error: extracted.error }, { status: 502 });
   }
   const { invoice, warnings } = extracted;
 
-  const parsed = supplierInvoiceInput.safeParse({ ...invoice, orderId: null });
+  // Propose a line for each shipment now, while the tracking numbers are in hand;
+  // the reviewer sees a filled-in split instead of an empty table.
+  const lines = await getCourierLineOptions();
+  const matched = matchShipmentsToLines(invoice.shipments, lines);
+  const unmatched = matched.filter((s) => s.lineId === null).length;
+  if (unmatched > 0) {
+    warnings.push(
+      unmatched === 1
+        ? "משלוח אחד לא זוהה מול שורה קיימת — יש לבחור שורה ידנית"
+        : `${unmatched} משלוחים לא זוהו מול שורות קיימות — יש לבחור שורה ידנית`,
+    );
+  }
+
+  const parsed = courierInvoiceDraft.safeParse({
+    ...invoice,
+    fileName: file.name,
+    shipments: matched.map(({ bol, reference, description, amount, lineId }) => ({
+      bol,
+      reference,
+      description,
+      amount,
+      lineId,
+    })),
+    warnings,
+  });
   if (!parsed.success) {
     return NextResponse.json(
       { error: "נתוני החשבונית שחולצו לא תקינים", details: parsed.error.issues },
@@ -74,52 +100,45 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let id: number;
+  let stagedId: number;
   try {
-    id = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(supplierInvoices)
-        .values({ ...parsed.data, fileName: file.name, source: "extracted" })
-        .returning({ id: supplierInvoices.id });
-      await tx.insert(supplierInvoiceFiles).values({
-        invoiceId: row.id,
+    const [row] = await db
+      .insert(stagedCourierInvoices)
+      .values({
+        payload: parsed.data,
+        fileName: file.name,
         mimeType: "application/pdf",
         sizeBytes: bytes.byteLength,
         bytes,
-      });
-      return row.id;
-    });
+      })
+      .returning({ id: stagedCourierInvoices.id });
+    stagedId = row.id;
   } catch (e) {
-    // The (supplier, invoice_number) guard: the same document twice.
-    if (isUniqueViolation(e)) {
-      return NextResponse.json(
-        {
-          error: `חשבונית ${parsed.data.invoiceNumber} מהספק ${parsed.data.supplier} כבר קיימת`,
-          duplicate: true,
-        },
-        { status: 409 },
-      );
-    }
-    console.error("invoice upload failed", e);
+    console.error("courier invoice upload failed", e);
     return NextResponse.json({ error: "שגיאה בשמירת החשבונית" }, { status: 500 });
   }
 
-  await audit("supplier_invoice", id, "ingest", {
+  await audit("staged_courier_invoice", stagedId, "ingest", {
     source: "manual_upload",
     file: file.name,
+    courier: parsed.data.courier,
+    invoiceNumber: parsed.data.invoiceNumber,
+    shipments: parsed.data.shipments.length,
+    matchedLines: parsed.data.shipments.filter((s) => s.lineId !== null).length,
     warnings,
   });
-  revalidatePath("/invoices");
-  revalidatePath("/");
+  revalidatePath("/courier");
 
   return NextResponse.json(
     {
       ok: true,
-      id,
-      supplier: parsed.data.supplier,
+      stagedId,
+      courier: parsed.data.courier,
       invoiceNumber: parsed.data.invoiceNumber,
       amount: parsed.data.amount,
       currency: parsed.data.currency,
+      shipments: parsed.data.shipments.length,
+      matched: parsed.data.shipments.filter((s) => s.lineId !== null).length,
       warnings,
     },
     { status: 201 },

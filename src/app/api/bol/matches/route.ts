@@ -86,6 +86,7 @@ export async function POST(request: NextRequest) {
   const written = results.filter((r) => r.status === "written").length;
   if (written > 0) {
     revalidatePath("/");
+    revalidatePath("/orders");
     revalidatePath("/monthly");
     revalidatePath("/bol");
   }

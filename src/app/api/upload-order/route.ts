@@ -93,6 +93,7 @@ export async function POST(request: NextRequest) {
     warnings,
   });
   revalidatePath("/intake");
+  revalidatePath("/");
 
   return NextResponse.json(
     {

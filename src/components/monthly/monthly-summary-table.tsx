@@ -43,6 +43,7 @@ export function MonthlySummaryTable({
               <TableHead>כמות</TableHead>
               <TableHead>מכירה ליח&apos;</TableHead>
               <TableHead>קנייה ליח&apos;</TableHead>
+              <TableHead>משלוח</TableHead>
               <TableHead>סך מכירה</TableHead>
               <TableHead>רווח</TableHead>
               <TableHead className="w-20">פעולות</TableHead>
@@ -61,6 +62,13 @@ export function MonthlySummaryTable({
                 <TableCell dir="ltr" className="text-end">{formatNumber(row.qty)}</TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.unitPrice)}</TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.buyPrice)}</TableCell>
+                <TableCell dir="ltr" className="text-end whitespace-nowrap">
+                  {row.shippingCost ? (
+                    formatILS(row.shippingCost)
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.sale)}</TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">
                   {row.profit === null ? (
@@ -98,6 +106,9 @@ export function MonthlySummaryTable({
                 <span dir="ltr" className="text-start">{row.orderNumber}</span>
                 <span>ספק: {row.supplier ?? "—"}</span>
                 <span>מכירה: <bdi dir="ltr">{formatILS(row.sale)}</bdi></span>
+                <span>
+                  משלוח: <bdi dir="ltr">{row.shippingCost ? formatILS(row.shippingCost) : "—"}</bdi>
+                </span>
               </div>
               <EditButton onClick={() => onEdit(row)} />
             </CardContent>

@@ -2,16 +2,27 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarRange, ClipboardList, Inbox, LogOut, ReceiptText, Truck } from "lucide-react";
+import {
+  Bike,
+  CalendarRange,
+  ClipboardList,
+  Inbox,
+  LayoutDashboard,
+  LogOut,
+  ReceiptText,
+  Truck,
+} from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { href: "/", label: "הזמנות פתוחות", icon: ClipboardList },
+  { href: "/", label: "דשבורד ניהול", icon: LayoutDashboard },
+  { href: "/orders", label: "הזמנות פתוחות", icon: ClipboardList },
   { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
   { href: "/bol", label: "שטרי מטען", icon: Truck },
   { href: "/invoices", label: "חשבוניות ספק", icon: ReceiptText },
+  { href: "/courier", label: "חשבוניות בלדר", icon: Bike },
   { href: "/monthly", label: "סיכום חודשי", icon: CalendarRange },
 ];
 

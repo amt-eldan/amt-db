@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { parseDotDate } from "./format";
+import { asRecord, isoDate, num, str } from "./extract-fields";
 import type { SupplierInvoiceInput } from "./validation";
 
 /**
@@ -22,49 +22,6 @@ const MANUAL_FALLBACK = " ניתן להזין את החשבונית ידנית �
 // Pure normalization (exported for the unit test — no API calls, `today`
 // injected exactly like src/lib/extract-order.ts so date checks are deterministic)
 // ---------------------------------------------------------------------------
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
-
-function str(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const t = v.trim();
-  return t === "" ? null : t;
-}
-
-function num(v: unknown): number | null {
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    const cleaned = v.replace(/[₪$,\s]/g, "");
-    if (cleaned === "") return null;
-    const n = parseFloat(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function isRealCalendarDate(iso: string): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return false;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
-}
-
-function isoDate(v: unknown, label: string, warnings: string[]): string | null {
-  const s = typeof v === "string" ? v.trim() : "";
-  if (s === "") return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && isRealCalendarDate(s)) return s;
-  const parsed = parseDotDate(s);
-  if (parsed && isRealCalendarDate(parsed)) return parsed;
-  warnings.push(`${label}: התאריך "${s}" לא זוהה כתאריך תקין והושמט`);
-  return null;
-}
 
 /**
  * Pure. Turns the model's raw tool input into an ExtractedInvoice plus Hebrew

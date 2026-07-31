@@ -22,6 +22,14 @@ export function formatNumber(value: number | string | null | undefined): string 
   return numberFormatter.format(n);
 }
 
+/**
+ * "1 שורות" is wrong in Hebrew, so one gets its own wording:
+ * countLabel(1, "שורה אחת", "שורות") → "שורה אחת"; countLabel(4, …) → "4 שורות".
+ */
+export function countLabel(count: number, one: string, many: string): string {
+  return count === 1 ? one : `${formatNumber(count)} ${many}`;
+}
+
 /** ISO date (yyyy-mm-dd) → dd.mm.yyyy */
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";

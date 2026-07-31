@@ -1,13 +1,20 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  auditLog,
+  courierInvoiceAllocations,
+  courierInvoiceFiles,
+  courierInvoices,
   customers,
   orderLines,
   orders,
+  stagedCourierInvoices,
   stagedOrders,
   supplierInvoiceFiles,
   supplierInvoices,
 } from "@/db/schema";
+import type { CourierLineOption } from "@/lib/courier-match";
+import type { CourierInvoiceDraft } from "@/lib/validation";
 
 export interface LineRow {
   lineId: number;
@@ -223,6 +230,182 @@ export async function getSupplierInvoiceFile(invoiceId: number) {
   return rows[0] ?? null;
 }
 
+export interface CourierInvoiceRow {
+  id: number;
+  courier: string;
+  invoiceNumber: string;
+  invoiceDate: string | null;
+  amount: string | null;
+  currency: string;
+  notes: string | null;
+  fileName: string | null;
+  source: string;
+  hasFile: boolean;
+  /** What this invoice actually put on order lines — may differ from `amount`. */
+  allocatedTotal: string | null;
+  allocatedLines: number;
+  createdAt: Date;
+}
+
+/**
+ * Approved courier invoices, newest document first, each with what it charged to
+ * order lines. Never selects `courier_invoice_files.bytes` — the file is served by
+ * its own route.
+ */
+export async function getCourierInvoices(): Promise<CourierInvoiceRow[]> {
+  return db
+    .select({
+      id: courierInvoices.id,
+      courier: courierInvoices.courier,
+      invoiceNumber: courierInvoices.invoiceNumber,
+      invoiceDate: courierInvoices.invoiceDate,
+      amount: courierInvoices.amount,
+      currency: courierInvoices.currency,
+      notes: courierInvoices.notes,
+      fileName: courierInvoices.fileName,
+      source: courierInvoices.source,
+      hasFile: sql<boolean>`${courierInvoiceFiles.invoiceId} is not null`,
+      allocatedTotal: sql<string | null>`sum(${courierInvoiceAllocations.amount})`,
+      allocatedLines: sql<number>`count(${courierInvoiceAllocations.id})::int`,
+      createdAt: courierInvoices.createdAt,
+    })
+    .from(courierInvoices)
+    .leftJoin(courierInvoiceFiles, eq(courierInvoiceFiles.invoiceId, courierInvoices.id))
+    .leftJoin(courierInvoiceAllocations, eq(courierInvoiceAllocations.invoiceId, courierInvoices.id))
+    // Grouping by the primary key is enough for Postgres to allow the other
+    // courier_invoices columns; the files join contributes only its own key.
+    .groupBy(courierInvoices.id, courierInvoiceFiles.invoiceId)
+    .orderBy(sql`${courierInvoices.invoiceDate} desc nulls last`, desc(courierInvoices.id));
+}
+
+export interface CourierAllocationRow {
+  id: number;
+  invoiceId: number;
+  lineId: number;
+  amount: string;
+  bol: string | null;
+  description: string | null;
+  orderNumber: string;
+  customerName: string;
+  pn: string | null;
+  poNumber: string | null;
+  orderDate: string | null;
+  isOpen: boolean;
+  /** The line's current shipping cost — the sum of all its allocations. */
+  lineShippingCost: string | null;
+}
+
+/** Every allocation with the line it sits on, for the courier page to group by invoice. */
+export async function getCourierAllocations(): Promise<CourierAllocationRow[]> {
+  return db
+    .select({
+      id: courierInvoiceAllocations.id,
+      invoiceId: courierInvoiceAllocations.invoiceId,
+      lineId: courierInvoiceAllocations.lineId,
+      amount: courierInvoiceAllocations.amount,
+      bol: courierInvoiceAllocations.bol,
+      description: courierInvoiceAllocations.description,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      pn: orderLines.pn,
+      poNumber: orderLines.poNumber,
+      orderDate: orders.orderDate,
+      isOpen: orderLines.isOpen,
+      lineShippingCost: orderLines.shippingCost,
+    })
+    .from(courierInvoiceAllocations)
+    .innerJoin(orderLines, eq(orderLines.id, courierInvoiceAllocations.lineId))
+    .innerJoin(orders, eq(orders.id, orderLines.orderId))
+    .innerJoin(customers, eq(customers.id, orders.customerId))
+    .orderBy(asc(courierInvoiceAllocations.invoiceId), asc(courierInvoiceAllocations.id));
+}
+
+export interface StagedCourierInvoiceRow {
+  id: number;
+  createdAt: Date;
+  fileName: string | null;
+  hasFile: boolean;
+  payload: CourierInvoiceDraft;
+}
+
+/**
+ * Courier invoices waiting for approval. Selects columns explicitly so the stored
+ * PDF (which lives in the same row) is never dragged into the list.
+ */
+export async function getStagedCourierInvoices(): Promise<StagedCourierInvoiceRow[]> {
+  const rows = await db
+    .select({
+      id: stagedCourierInvoices.id,
+      createdAt: stagedCourierInvoices.createdAt,
+      fileName: stagedCourierInvoices.fileName,
+      hasFile: sql<boolean>`${stagedCourierInvoices.bytes} is not null`,
+      payload: stagedCourierInvoices.payload,
+    })
+    .from(stagedCourierInvoices)
+    .orderBy(desc(stagedCourierInvoices.createdAt), desc(stagedCourierInvoices.id));
+  // The payload is written through courierInvoiceDraft, so its shape is ours.
+  return rows.map((row) => ({ ...row, payload: row.payload as CourierInvoiceDraft }));
+}
+
+/** The stored PDF for one approved courier invoice. Used only by the file route. */
+export async function getCourierInvoiceFile(invoiceId: number) {
+  const rows = await db
+    .select({
+      bytes: courierInvoiceFiles.bytes,
+      mimeType: courierInvoiceFiles.mimeType,
+      fileName: courierInvoices.fileName,
+    })
+    .from(courierInvoiceFiles)
+    .innerJoin(courierInvoices, eq(courierInvoices.id, courierInvoiceFiles.invoiceId))
+    .where(eq(courierInvoiceFiles.invoiceId, invoiceId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * The stored PDF of a pending courier invoice — the reviewer needs to read the
+ * document while deciding which lines it covers.
+ */
+export async function getStagedCourierInvoiceFile(stagedId: number) {
+  const rows = await db
+    .select({
+      bytes: stagedCourierInvoices.bytes,
+      mimeType: stagedCourierInvoices.mimeType,
+      fileName: stagedCourierInvoices.fileName,
+    })
+    .from(stagedCourierInvoices)
+    .where(eq(stagedCourierInvoices.id, stagedId))
+    .limit(1);
+  const row = rows[0];
+  if (!row?.bytes) return null;
+  return { bytes: row.bytes, mimeType: row.mimeType, fileName: row.fileName };
+}
+
+/**
+ * Lines a courier charge can be attached to — open and closed alike, because the
+ * shipping cost of a closed line is exactly what the monthly summary needs.
+ * Deliberately narrow: these fields are the matcher's input and the picker's
+ * labels, nothing more.
+ */
+export async function getCourierLineOptions(): Promise<CourierLineOption[]> {
+  return db
+    .select({
+      lineId: orderLines.id,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      pn: orderLines.pn,
+      poNumber: orderLines.poNumber,
+      bol: orderLines.bol,
+      shippingCost: orderLines.shippingCost,
+      orderDate: orders.orderDate,
+      isOpen: orderLines.isOpen,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .orderBy(sql`${orders.orderDate} desc nulls last`, desc(orderLines.id));
+}
+
 /** Orders an invoice can be attached to, newest first. */
 export async function getOrderOptions() {
   return db
@@ -235,6 +418,33 @@ export async function getOrderOptions() {
     .from(orders)
     .innerJoin(customers, eq(orders.customerId, customers.id))
     .orderBy(sql`${orders.orderDate} desc nulls last`, desc(orders.id));
+}
+
+export interface ActivityRow {
+  id: number;
+  entity: string;
+  entityId: number | null;
+  action: string;
+  createdAt: Date;
+}
+
+/**
+ * The last few audited writes, for the dashboard's activity panel. Deliberately
+ * without `diff` — the panel says what happened, and the audit row itself is where
+ * anyone goes for what exactly changed.
+ */
+export async function getRecentActivity(limit = 8): Promise<ActivityRow[]> {
+  return db
+    .select({
+      id: auditLog.id,
+      entity: auditLog.entity,
+      entityId: auditLog.entityId,
+      action: auditLog.action,
+      createdAt: auditLog.createdAt,
+    })
+    .from(auditLog)
+    .orderBy(desc(auditLog.id))
+    .limit(limit);
 }
 
 export async function getCustomers() {

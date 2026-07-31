@@ -44,13 +44,18 @@ export function MonthlyView({
   const totals = useMemo(() => {
     let sale = 0;
     let profit = 0;
+    let shipping = 0;
     let pendingCount = 0;
+    let missingShipping = 0;
     for (const row of computed) {
       if (row.sale !== null) sale += row.sale;
       if (row.profit === null) pendingCount++;
       else profit += row.profit;
+      const rowShipping = row.shippingCost === null ? null : parseFloat(row.shippingCost);
+      if (rowShipping !== null && !Number.isNaN(rowShipping)) shipping += rowShipping;
+      else missingShipping++;
     }
-    return { sale, profit, pendingCount };
+    return { sale, profit, shipping, pendingCount, missingShipping };
   }, [computed]);
 
   function exportCsv() {
@@ -120,7 +125,7 @@ export function MonthlyView({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
         <TotalCard label='סה"כ מכירות' value={formatILS(totals.sale)} />
         <TotalCard
           label='סה"כ רווח'
@@ -128,7 +133,16 @@ export function MonthlyView({
           sub={totals.pendingCount > 0 ? `${totals.pendingCount} שורות ממתינות למחיר קנייה` : undefined}
           highlight={totals.profit >= 0 ? "positive" : "negative"}
         />
-        <TotalCard label="שורות" value={String(rows.length)} className="col-span-2 md:col-span-1" />
+        <TotalCard
+          label="עלות משלוח"
+          value={formatILS(totals.shipping)}
+          sub={
+            totals.missingShipping > 0
+              ? `${totals.missingShipping} שורות בלי עלות משלוח`
+              : undefined
+          }
+        />
+        <TotalCard label="שורות" value={String(rows.length)} />
       </div>
 
       {computed.length === 0 ? (
@@ -151,16 +165,14 @@ function TotalCard({
   value,
   sub,
   highlight,
-  className,
 }: {
   label: string;
   value: string;
   sub?: string;
   highlight?: "positive" | "negative";
-  className?: string;
 }) {
   return (
-    <Card className={cn("py-3", className)}>
+    <Card className="py-3">
       <CardContent className="px-4">
         <p
           dir="ltr"

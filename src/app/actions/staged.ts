@@ -51,6 +51,7 @@ export async function approveStaged(
   await db.delete(stagedOrders).where(eq(stagedOrders.id, stagedId));
   await audit("staged_order", stagedId, "approve", { orderNumber: p.orderNumber });
   revalidatePath("/intake");
+  revalidatePath("/");
   return { ok: true, message: `הזמנה ${p.orderNumber} אושרה ונוספה למעקב` };
 }
 
@@ -62,5 +63,6 @@ export async function rejectStaged(stagedId: number): Promise<ActionResult> {
   await db.delete(stagedOrders).where(eq(stagedOrders.id, stagedId));
   await audit("staged_order", stagedId, "reject", staged.payload);
   revalidatePath("/intake");
+  revalidatePath("/");
   return { ok: true, message: "ההזמנה נדחתה ונמחקה" };
 }
