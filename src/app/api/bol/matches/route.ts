@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { orderLines } from "@/db/schema";
 import { evaluateBolMatch } from "@/lib/bol-match";
 import { applyLineFields } from "@/lib/line-fields";
+import { normalizeCarrierStatus } from "@/lib/shipment-status";
 import { bolMatchInput } from "@/lib/validation";
 
 type MatchResult = {
@@ -64,14 +65,31 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
+    const line = existing!; // evaluateBolMatch only returns write:true for a line it found
+    const fields: Record<string, unknown> = {
+      bol: match.bol,
+      carrier: match.carrier,
+      bolSource: "auto",
+      bolConfidence: match.confidence,
+    };
+
+    // The shipment is now trackable, so record where it stands. shipment_status is
+    // the normalized value the /bol screen filters on; the carrier's own wording
+    // goes to delivery_update — but only when that field is still empty, because a
+    // human's note there must not be overwritten by an automated run (the same
+    // never-clobber rule this endpoint already applies to `bol`).
+    if (match.statusText) {
+      fields.shipmentStatus = normalizeCarrierStatus(match.statusText);
+      fields.shipmentStatusAt = new Date();
+      if (!line.deliveryUpdate || line.deliveryUpdate.trim() === "") {
+        fields.deliveryUpdate = match.statusText;
+      }
+    }
+    if (match.etaDate) fields.shipmentEta = match.etaDate;
+
     await applyLineFields(
-      existing!, // evaluateBolMatch only returns write:true for a line it found
-      {
-        bol: match.bol,
-        carrier: match.carrier,
-        bolSource: "auto",
-        bolConfidence: match.confidence,
-      },
+      line,
+      fields,
       {
         agent: "bol-tracking",
         emailId: match.sourceEmailId,

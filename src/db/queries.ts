@@ -39,6 +39,9 @@ export interface LineRow {
   carrier: string | null;
   bolSource: string | null;
   bolConfidence: string | null;
+  shipmentStatus: string | null;
+  shipmentStatusAt: Date | null;
+  shipmentEta: string | null;
   notes: string | null;
   manualStatus: string | null;
   isOpen: boolean;
@@ -73,6 +76,9 @@ const lineColumns = {
   carrier: orderLines.carrier,
   bolSource: orderLines.bolSource,
   bolConfidence: orderLines.bolConfidence,
+  shipmentStatus: orderLines.shipmentStatus,
+  shipmentStatusAt: orderLines.shipmentStatusAt,
+  shipmentEta: orderLines.shipmentEta,
   notes: orderLines.notes,
   manualStatus: orderLines.manualStatus,
   isOpen: orderLines.isOpen,

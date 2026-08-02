@@ -14,7 +14,13 @@ import {
 } from "@/components/ui/table";
 import type { LineRow } from "@/db/queries";
 import { hasBol } from "@/lib/bol";
-import { formatDate } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { formatDate, formatTimestamp } from "@/lib/format";
+import {
+  SHIPMENT_STATUS_LABELS,
+  SHIPMENT_STATUS_UNKNOWN_LABEL,
+  type ShipmentStatus,
+} from "@/lib/shipment-status";
 
 export function BolTable({
   rows,
@@ -37,6 +43,8 @@ export function BolTable({
               <TableHead>ספק</TableHead>
               <TableHead>שטר מטען</TableHead>
               <TableHead>חברת הובלה</TableHead>
+              <TableHead>סטטוס משלוח</TableHead>
+              <TableHead>צפי הגעה</TableHead>
               <TableHead>מקור</TableHead>
               <TableHead className="w-20">פעולות</TableHead>
             </TableRow>
@@ -61,6 +69,12 @@ export function BolTable({
                   )}
                 </TableCell>
                 <TableCell>{row.carrier ?? "—"}</TableCell>
+                <TableCell>
+                  <ShipmentStatusBadge row={row} />
+                </TableCell>
+                <TableCell dir="ltr" className="text-end whitespace-nowrap">
+                  {formatDate(row.shipmentEta)}
+                </TableCell>
                 <TableCell>
                   <BolSource row={row} />
                 </TableCell>
@@ -93,16 +107,53 @@ export function BolTable({
                 <span dir="ltr" className="text-start">{row.orderNumber}</span>
                 <span>ספק: {row.supplier ?? "—"}</span>
                 <span>הובלה: {row.carrier ?? "—"}</span>
+                <span>
+                  צפי: <bdi dir="ltr">{formatDate(row.shipmentEta)}</bdi>
+                </span>
+                {row.shipmentStatusAt && (
+                  <span className="col-span-2">
+                    עדכון: <bdi dir="ltr">{formatTimestamp(row.shipmentStatusAt)}</bdi>
+                  </span>
+                )}
               </div>
               <div className="flex items-center justify-between gap-2">
                 <EditButton onClick={() => onEdit(row)} />
-                <BolSource row={row} />
+                <div className="flex items-center gap-2">
+                  <ShipmentStatusBadge row={row} />
+                  <BolSource row={row} />
+                </div>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * The normalized shipment status, with the carrier's own wording as the tooltip.
+ * A line holding a BOL but no readable status reads "לא ידוע" rather than being
+ * dressed up as in transit — the normalization exists for filtering, so the raw
+ * text has to stay reachable.
+ */
+function ShipmentStatusBadge({ row }: { row: LineRow }) {
+  if (!hasBol(row)) return <span className="text-muted-foreground">—</span>;
+
+  const status = row.shipmentStatus;
+  const known = status !== null && status in SHIPMENT_STATUS_LABELS;
+  const label = known
+    ? SHIPMENT_STATUS_LABELS[status as ShipmentStatus]
+    : SHIPMENT_STATUS_UNKNOWN_LABEL;
+
+  return (
+    <Badge
+      variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
+      className={cn("whitespace-nowrap", !known && "text-muted-foreground")}
+      title={row.deliveryUpdate ?? undefined}
+    >
+      {label}
+    </Badge>
   );
 }
 

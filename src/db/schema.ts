@@ -64,6 +64,13 @@ export const orderLines = pgTable("order_lines", {
   // once a human typed or corrected it. Lets the UI flag unreviewed values.
   bolSource: text("bol_source"), // NULL | 'auto' | 'manual'
   bolConfidence: numeric("bol_confidence"), // 0..1, only meaningful for 'auto'
+  // Machine-readable shipment state, normalized from the carrier's wording by
+  // normalizeCarrierStatus(). `delivery_update` above keeps the raw text a human
+  // reads and lineStatus() keys off; this column exists so "still in the air" is a
+  // filter rather than substring-matching carrier prose.
+  shipmentStatus: text("shipment_status"), // NULL (unknown) | see SHIPMENT_STATUSES
+  shipmentStatusAt: timestamp("shipment_status_at", { withTimezone: true }),
+  shipmentEta: date("shipment_eta"),
   notes: text("notes"),
   manualStatus: text("manual_status"), // NULL | 'הגיע' | 'סופק חלקי' | 'מאחר'
   isOpen: boolean("is_open").notNull().default(true),

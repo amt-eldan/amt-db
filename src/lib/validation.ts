@@ -192,6 +192,8 @@ export const bolMatchInput = z.object({
   bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
   carrier: optionalText,
   statusText: optionalText,
+  // Carrier's estimated arrival, when the email states one.
+  etaDate: optionalIsoDate,
   sourceEmailId: optionalText,
   sourceQuote: optionalText,
   confidence: z
