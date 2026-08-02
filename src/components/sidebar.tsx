@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/", label: "הזמנות פתוחות", icon: ClipboardList },
-  { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
   { href: "/monthly", label: "סיכום חודשי", icon: CalendarRange },
+  { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
 ];
 
 export function Sidebar() {
