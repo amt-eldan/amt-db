@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { parseDotDate } from "./format";
+import { parseNumeric } from "./numeric";
 import { isModOrderNumber, stagedPayload } from "./validation";
 
 /**
@@ -37,19 +38,13 @@ function str(v: unknown): string | null {
 }
 
 /**
- * number → itself (if finite); string → strip ₪ $ commas and whitespace,
- * then parseFloat. Returns `number | null`, consistent with the pipeline
- * payload documented in the README (numeric line values arrive as numbers).
+ * The model's loosely-typed number → `number | null`, consistent with the
+ * pipeline payload documented in the README (numeric line values arrive as
+ * numbers). Anything that is not a number or string is not a number.
  */
 function num(v: unknown): number | null {
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    const cleaned = v.replace(/[₪$,\s]/g, "");
-    if (cleaned === "") return null;
-    const n = parseFloat(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
+  if (typeof v !== "number" && typeof v !== "string") return null;
+  return parseNumeric(v);
 }
 
 /** Real calendar date behind a yyyy-mm-dd string (rejects 2026-02-31 etc.). */

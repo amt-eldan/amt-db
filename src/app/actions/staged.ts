@@ -49,7 +49,12 @@ export async function approveStaged(
   if (!result.ok) return result;
 
   await db.delete(stagedOrders).where(eq(stagedOrders.id, stagedId));
-  await audit("staged_order", stagedId, "approve", { orderNumber: p.orderNumber });
+  // Carry the extraction warnings into the audit trail: the staged row (and with
+  // it the only other copy of them) is being deleted right here.
+  await audit("staged_order", stagedId, "approve", {
+    orderNumber: p.orderNumber,
+    warnings: staged.warnings ?? [],
+  });
   revalidatePath("/intake");
   return { ok: true, message: `הזמנה ${p.orderNumber} אושרה ונוספה למעקב` };
 }
@@ -60,7 +65,10 @@ export async function rejectStaged(stagedId: number): Promise<ActionResult> {
   if (!staged) return { ok: false, error: "ההזמנה הממתינה לא נמצאה" };
 
   await db.delete(stagedOrders).where(eq(stagedOrders.id, stagedId));
-  await audit("staged_order", stagedId, "reject", staged.payload);
+  await audit("staged_order", stagedId, "reject", {
+    payload: staged.payload,
+    warnings: staged.warnings ?? [],
+  });
   revalidatePath("/intake");
   return { ok: true, message: "ההזמנה נדחתה ונמחקה" };
 }

@@ -82,9 +82,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Warnings are persisted, not just returned: the reviewer who approves the card
+  // may be a refresh or a day away from the upload, and "no order date found" has
+  // to still be on screen then.
   const [row] = await db
     .insert(stagedOrders)
-    .values({ payload: parsed.data })
+    .values({ payload: parsed.data, warnings })
     .returning({ id: stagedOrders.id });
 
   await audit("staged_order", row.id, "ingest", {

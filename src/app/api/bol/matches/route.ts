@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { orderLines } from "@/db/schema";
+import { orderLines, type OrderLine } from "@/db/schema";
+import { requireBearer } from "@/lib/api-auth";
 import { evaluateBolMatch } from "@/lib/bol-match";
 import { applyLineFields } from "@/lib/line-fields";
 import { bolMatchInput } from "@/lib/validation";
@@ -26,11 +27,8 @@ type MatchResult = {
  *  - records the source email + quote in audit_log for every write.
  */
 export async function POST(request: NextRequest) {
-  const token = process.env.BOL_AGENT_TOKEN;
-  const header = request.headers.get("authorization") ?? "";
-  if (!token || header !== `Bearer ${token}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const denied = requireBearer(request, process.env.BOL_AGENT_TOKEN);
+  if (denied) return denied;
 
   let body: unknown;
   try {
@@ -49,14 +47,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const results: MatchResult[] = [];
-  for (const p of parsed) {
-    const match = p.data!;
+  const matches = parsed.map((p) => p.data!);
 
-    const [existing] = await db
-      .select()
-      .from(orderLines)
-      .where(eq(orderLines.id, match.lineId));
+  // One lookup for the whole batch rather than a round-trip per match — a nightly
+  // run covers tens of lines, and Neon is over the network.
+  const byId = new Map<number, OrderLine>();
+  const ids = [...new Set(matches.map((m) => m.lineId))];
+  if (ids.length > 0) {
+    const found = await db.select().from(orderLines).where(inArray(orderLines.id, ids));
+    for (const line of found) byId.set(line.id, line);
+  }
+
+  const results: MatchResult[] = [];
+  for (const match of matches) {
+    const existing = byId.get(match.lineId);
 
     const verdict = evaluateBolMatch(existing, match);
     if (!verdict.write) {
@@ -64,14 +68,17 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
+    const line = existing!; // evaluateBolMatch only returns write:true for a line it found
+    const fields = {
+      bol: match.bol,
+      carrier: match.carrier,
+      bolSource: "auto",
+      bolConfidence: match.confidence,
+    };
+
     await applyLineFields(
-      existing!, // evaluateBolMatch only returns write:true for a line it found
-      {
-        bol: match.bol,
-        carrier: match.carrier,
-        bolSource: "auto",
-        bolConfidence: match.confidence,
-      },
+      line,
+      fields,
       {
         agent: "bol-tracking",
         emailId: match.sourceEmailId,
@@ -79,7 +86,13 @@ export async function POST(request: NextRequest) {
         carrierStatus: match.statusText,
         confidence: match.confidence,
       },
+      "agent:bol-tracking",
     );
+
+    // Keep the cached row in step with what was just written, so a second match
+    // for the same line in this batch hits the never-overwrite guard instead of
+    // reading a stale empty `bol`.
+    byId.set(line.id, { ...line, ...fields });
     results.push({ lineId: match.lineId, status: "written" });
   }
 

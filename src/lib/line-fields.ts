@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { orderLines, type OrderLine } from "@/db/schema";
-import { audit } from "@/lib/audit";
+import { audit, type Actor } from "@/lib/audit";
 
 /**
  * Writes already-validated field updates onto a line and records the before/after
@@ -18,6 +18,7 @@ export async function applyLineFields(
   existing: OrderLine,
   fields: Record<string, unknown>,
   provenance?: Record<string, unknown>,
+  actor: Actor = "user",
 ): Promise<void> {
   await db
     .update(orderLines)
@@ -30,5 +31,5 @@ export async function applyLineFields(
     if (String(before ?? "") !== String(v ?? "")) diff[k] = { from: before, to: v };
   }
   if (provenance) diff.source = provenance;
-  await audit("order_line", existing.id, "update", diff);
+  await audit("order_line", existing.id, "update", diff, actor);
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseNumericString } from "./numeric";
 import { MANUAL_STATUSES } from "./status";
 
 /** MoD orders: 10 digits starting with 444 → the customer is the purchasing-group number. */
@@ -14,14 +15,13 @@ const optionalText = z
   .nullish()
   .transform((s) => s ?? null);
 
+// Numeric columns round-trip through Drizzle as strings, so this normalises to
+// `string | null`. Parsing itself lives in ./numeric so that a value typed as
+// "₪1,200" means the same thing here, in the profit maths, and in the extractor.
 const optionalNumeric = z
   .union([z.string(), z.number()])
   .nullish()
-  .transform((v) => {
-    if (v === null || v === undefined || v === "") return null;
-    const n = typeof v === "string" ? parseFloat(v.replace(/,/g, "")) : v;
-    return Number.isFinite(n) ? String(n) : null;
-  });
+  .transform((v) => parseNumericString(v));
 
 const optionalIsoDate = z
   .string()
@@ -92,6 +92,22 @@ export const stagedPayload = z.object({
     )
     .min(1),
 });
+
+/**
+ * Things a human should double-check before approving a staged order — emitted
+ * by the PDF extractor and accepted (optionally) from the external OCR pipeline
+ * as a top-level `warnings` array alongside the payload.
+ *
+ * Deliberately not part of `stagedPayload`: that schema is the documented API
+ * contract *and* what the review card posts back after editing, and it strips
+ * unknown keys, so warnings cannot be lost or tampered with through it. They are
+ * stored in their own column (staged_orders.warnings).
+ */
+export const stagedWarnings = z
+  .array(z.string().trim().min(1).max(500))
+  .max(100)
+  .nullish()
+  .transform((w) => w ?? []);
 
 /**
  * One bill-of-lading match accepted by POST /api/bol/matches (from the external

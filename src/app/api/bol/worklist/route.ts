@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBolWorklist } from "@/db/queries";
+import { requireBearer } from "@/lib/api-auth";
 
 /**
  * Worklist for the external shipment-tracking agent.
@@ -11,11 +12,8 @@ import { getBolWorklist } from "@/db/queries";
  * tracking number to one specific line.
  */
 export async function GET(request: NextRequest) {
-  const token = process.env.BOL_AGENT_TOKEN;
-  const header = request.headers.get("authorization") ?? "";
-  if (!token || header !== `Bearer ${token}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const denied = requireBearer(request, process.env.BOL_AGENT_TOKEN);
+  if (denied) return denied;
 
   const lines = await getBolWorklist();
   return NextResponse.json({ ok: true, count: lines.length, lines });

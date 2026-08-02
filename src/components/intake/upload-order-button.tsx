@@ -73,7 +73,17 @@ export function UploadOrderButton() {
     toast.success(
       `${data?.orderNumber ?? file.name} · ${data?.customer ?? ""} — ${data?.lineCount ?? 0} שורות נקלטו לאישור`,
     );
-    for (const warning of data?.warnings ?? []) toast.warning(warning);
+    // One summary instead of a toast per warning: the warnings themselves are now
+    // stored on the staged order and shown on its review card, so they no longer
+    // have to be caught as they fly past.
+    const warningCount = data?.warnings?.length ?? 0;
+    if (warningCount > 0) {
+      toast.warning(
+        warningCount === 1
+          ? "אזהרה אחת דורשת בדיקה — מוצגת בכרטיס האישור"
+          : `${warningCount} אזהרות דורשות בדיקה — מוצגות בכרטיס האישור`,
+      );
+    }
     router.refresh();
     return { ok: true };
   }

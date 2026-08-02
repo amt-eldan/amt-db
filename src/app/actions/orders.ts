@@ -158,12 +158,19 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
 
 export async function setLineOpen(lineId: number, isOpen: boolean): Promise<ActionResult> {
   await requireSession();
+  const [existing] = await db
+    .select({ isOpen: orderLines.isOpen })
+    .from(orderLines)
+    .where(eq(orderLines.id, lineId));
+  if (!existing) return { ok: false, error: "השורה לא נמצאה" };
+
   await db
     .update(orderLines)
     .set({ isOpen, updatedAt: new Date() })
     .where(eq(orderLines.id, lineId));
-  await audit("order_line", lineId, isOpen ? "reopen" : "close");
+  await audit("order_line", lineId, isOpen ? "reopen" : "close", { from: existing.isOpen });
   revalidatePath("/");
+  revalidatePath("/monthly");
   return { ok: true, message: isOpen ? "השורה נפתחה מחדש" : "השורה נסגרה" };
 }
 

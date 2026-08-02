@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customers, orderLines, orders, stagedOrders } from "@/db/schema";
+import { monthRange } from "@/lib/format";
 
 export interface OpenLineRow {
   lineId: number;
@@ -31,7 +32,13 @@ export interface OpenLineRow {
   createdAt: Date;
 }
 
-export async function getLines(includeArchived: boolean): Promise<OpenLineRow[]> {
+/**
+ * Lines for the open-orders screen — **exactly one** of the two sets, because the
+ * screen shows either open lines or the archive and never both. Loading both and
+ * filtering in the browser meant every page load shipped the whole (ever-growing)
+ * archive to the client just to hide it.
+ */
+export async function getLines(archived: boolean): Promise<OpenLineRow[]> {
   const rows = await db
     .select({
       lineId: orderLines.id,
@@ -64,9 +71,40 @@ export async function getLines(includeArchived: boolean): Promise<OpenLineRow[]>
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
     .innerJoin(customers, eq(orders.customerId, customers.id))
-    .where(includeArchived ? undefined : eq(orderLines.isOpen, true))
+    .where(eq(orderLines.isOpen, !archived))
     .orderBy(asc(customers.name), desc(orderLines.createdAt), desc(orderLines.id));
   return rows;
+}
+
+/** The columns lineStatus() needs, plus the customer, for the header stat cards. */
+export type OpenStatusRow = Pick<
+  OpenLineRow,
+  "customerName" | "manualStatus" | "bol" | "deliveryUpdate" | "notes" | "contractDueDate"
+>;
+
+/**
+ * Open lines, narrowed to just what the stat cards need.
+ *
+ * The "late" count depends on lineStatus(), whose priority rules must stay in one
+ * place rather than being reimplemented in SQL — so the rows are still counted in
+ * JS, but six columns of them instead of all twenty-five. Queried separately from
+ * getLines so the cards keep showing open-line figures while the archive is on
+ * screen.
+ */
+export async function getOpenStatusRows(): Promise<OpenStatusRow[]> {
+  return db
+    .select({
+      customerName: customers.name,
+      manualStatus: orderLines.manualStatus,
+      bol: orderLines.bol,
+      deliveryUpdate: orderLines.deliveryUpdate,
+      notes: orderLines.notes,
+      contractDueDate: orderLines.contractDueDate,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(eq(orderLines.isOpen, true));
 }
 
 export interface MonthlyRow {
@@ -85,6 +123,7 @@ export interface MonthlyRow {
 }
 
 export async function getMonthlyLines(year: number, month: number): Promise<MonthlyRow[]> {
+  const { from, to } = monthRange(year, month);
   const rows = await db
     .select({
       lineId: orderLines.id,
@@ -108,8 +147,10 @@ export async function getMonthlyLines(year: number, month: number): Promise<Mont
         // The monthly ledger reflects closed lines only (like the legacy
         // monthly sheets); open lines join it once they are closed.
         eq(orderLines.isOpen, false),
-        sql`extract(year from ${orders.orderDate}) = ${year}`,
-        sql`extract(month from ${orders.orderDate}) = ${month}`,
+        // A half-open range rather than extract(year/month from …): a function
+        // over the column cannot use orders_order_date_idx, a range can.
+        gte(orders.orderDate, from),
+        lt(orders.orderDate, to),
       ),
     )
     .orderBy(asc(customers.name), asc(orders.orderDate), asc(orderLines.id));
