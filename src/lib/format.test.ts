@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatILS, formatMonth, formatNumber, monthRange, parseDotDate } from "./format";
+import {
+  countLabel,
+  formatDate,
+  formatILS,
+  formatMonth,
+  formatNumber,
+  formatTimestamp,
+  monthRange,
+  parseDotDate,
+} from "./format";
 
 describe("monthRange", () => {
   it("spans the month as a half-open range", () => {
@@ -23,6 +32,21 @@ describe("monthRange", () => {
   });
 });
 
+describe("countLabel", () => {
+  it("uses the singular wording for one, because '1 שורות' is not Hebrew", () => {
+    expect(countLabel(1, "שורה אחת", "שורות")).toBe("שורה אחת");
+  });
+
+  it("prefixes the count for anything else", () => {
+    expect(countLabel(4, "שורה אחת", "שורות")).toBe("4 שורות");
+    expect(countLabel(0, "שורה אחת", "שורות")).toBe("0 שורות");
+  });
+
+  it("groups thousands", () => {
+    expect(countLabel(1200, "שורה אחת", "שורות")).toBe("1,200 שורות");
+  });
+});
+
 describe("formatDate / parseDotDate", () => {
   it("round-trips between ISO and dd.mm.yyyy", () => {
     expect(formatDate("2026-07-15")).toBe("15.07.2026");
@@ -35,6 +59,8 @@ describe("formatDate / parseDotDate", () => {
     expect(formatDate(null)).toBe("—");
     expect(parseDotDate("")).toBeNull();
     expect(parseDotDate("15.7.26")).toBeNull();
+    expect(parseDotDate("15/7/26")).toBeNull();
+    expect(parseDotDate(null)).toBeNull();
   });
 });
 
@@ -53,6 +79,21 @@ describe("formatILS / formatNumber", () => {
   it("formats finite values", () => {
     expect(formatILS(0)).toContain("0");
     expect(formatNumber("1500")).toContain("1");
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("renders a dash for nothing and for an unparseable date", () => {
+    expect(formatTimestamp(null)).toBe("—");
+    expect(formatTimestamp(undefined)).toBe("—");
+    expect(formatTimestamp("not a date")).toBe("—");
+    expect(formatTimestamp(new Date("nonsense"))).toBe("—");
+  });
+
+  it("renders a real timestamp with both date and time", () => {
+    const out = formatTimestamp(new Date("2026-07-15T09:30:00Z"));
+    expect(out).toContain("2026");
+    expect(out).toMatch(/\d{2}:\d{2}/);
   });
 });
 

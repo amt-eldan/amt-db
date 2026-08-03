@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Download } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -13,31 +13,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import type { MonthlyRow } from "@/db/queries";
-import { formatDate, formatILS, formatMonth, formatNumber } from "@/lib/format";
+import type { LineRow } from "@/db/queries";
+import { formatDate, formatILS, formatMonth } from "@/lib/format";
 import { lineProfit, lineValue } from "@/lib/profit";
 import { cn } from "@/lib/utils";
+import { MonthlySummaryTable, type MonthlyComputedRow } from "./monthly-summary-table";
 
 export function MonthlyView({
   rows,
   months,
   selected,
 }: {
-  rows: MonthlyRow[];
+  rows: LineRow[];
   months: string[];
   selected: string;
 }) {
   const router = useRouter();
+  const [editing, setEditing] = useState<LineRow | null>(null);
 
-  const computed = useMemo(
+  const computed = useMemo<MonthlyComputedRow[]>(
     () =>
       rows.map((row) => ({
         ...row,
@@ -50,13 +44,18 @@ export function MonthlyView({
   const totals = useMemo(() => {
     let sale = 0;
     let profit = 0;
+    let shipping = 0;
     let pendingCount = 0;
+    let missingShipping = 0;
     for (const row of computed) {
       if (row.sale !== null) sale += row.sale;
       if (row.profit === null) pendingCount++;
       else profit += row.profit;
+      const rowShipping = row.shippingCost === null ? null : parseFloat(row.shippingCost);
+      if (rowShipping !== null && !Number.isNaN(rowShipping)) shipping += rowShipping;
+      else missingShipping++;
     }
-    return { sale, profit, pendingCount };
+    return { sale, profit, shipping, pendingCount, missingShipping };
   }, [computed]);
 
   function exportCsv() {
@@ -126,7 +125,7 @@ export function MonthlyView({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4">
         <TotalCard label='סה"כ מכירות' value={formatILS(totals.sale)} />
         <TotalCard
           label='סה"כ רווח'
@@ -134,88 +133,29 @@ export function MonthlyView({
           sub={totals.pendingCount > 0 ? `${totals.pendingCount} שורות ממתינות למחיר קנייה` : undefined}
           highlight={totals.profit >= 0 ? "positive" : "negative"}
         />
-        <TotalCard label="שורות" value={String(rows.length)} className="col-span-2 md:col-span-1" />
+        <TotalCard
+          label="עלות משלוח"
+          value={formatILS(totals.shipping)}
+          sub={
+            totals.missingShipping > 0
+              ? `${totals.missingShipping} שורות בלי עלות משלוח`
+              : undefined
+          }
+        />
+        <TotalCard label="שורות" value={String(rows.length)} />
       </div>
 
-      {rows.length === 0 ? (
+      {computed.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
             אין שורות סגורות בחודש {formatMonth(selected)}.
           </CardContent>
         </Card>
       ) : (
-        <>
-          {/* Desktop table */}
-          <div className="hidden md:block rounded-lg border overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>לקוח</TableHead>
-                  <TableHead>מס' הזמנה</TableHead>
-                  <TableHead>תאריך</TableHead>
-                  <TableHead>P/N</TableHead>
-                  <TableHead>ספק</TableHead>
-                  <TableHead>כמות</TableHead>
-                  <TableHead>מכירה ליח&apos;</TableHead>
-                  <TableHead>קנייה ליח&apos;</TableHead>
-                  <TableHead>סך מכירה</TableHead>
-                  <TableHead>רווח</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {computed.map((row) => (
-                  <TableRow key={row.lineId}>
-                    <TableCell>{row.customerName}</TableCell>
-                    <TableCell dir="ltr" className="text-end">{row.orderNumber}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">
-                      {formatDate(row.orderDate)}
-                    </TableCell>
-                    <TableCell dir="ltr" className="text-end">{row.pn ?? "—"}</TableCell>
-                    <TableCell>{row.supplier ?? "—"}</TableCell>
-                    <TableCell dir="ltr" className="text-end">{formatNumber(row.qty)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.unitPrice)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.buyPrice)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.sale)}</TableCell>
-                    <TableCell dir="ltr" className="text-end whitespace-nowrap">
-                      {row.profit === null ? (
-                        <Badge variant="outline" className="text-muted-foreground">ממתין</Badge>
-                      ) : (
-                        <span className={cn(row.profit < 0 && "text-red-600")}>{formatILS(row.profit)}</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-
-          {/* Mobile cards */}
-          <div className="md:hidden flex flex-col gap-2">
-            {computed.map((row) => (
-              <Card key={row.lineId} className="py-3">
-                <CardContent className="px-3 flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium truncate" dir="ltr">{row.pn ?? row.orderNumber}</span>
-                    {row.profit === null ? (
-                      <Badge variant="outline">ממתין</Badge>
-                    ) : (
-                      <span className={cn("text-sm", row.profit < 0 && "text-red-600")} dir="ltr">
-                        {formatILS(row.profit)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span>{row.customerName}</span>
-                    <span dir="ltr" className="text-start">{row.orderNumber}</span>
-                    <span>ספק: {row.supplier ?? "—"}</span>
-                    <span>מכירה: <bdi dir="ltr">{formatILS(row.sale)}</bdi></span>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </>
+        <MonthlySummaryTable rows={computed} onEdit={setEditing} />
       )}
+
+      <LineEditSheet line={editing} onClose={() => setEditing(null)} />
     </div>
   );
 }
@@ -225,16 +165,14 @@ function TotalCard({
   value,
   sub,
   highlight,
-  className,
 }: {
   label: string;
   value: string;
   sub?: string;
   highlight?: "positive" | "negative";
-  className?: string;
 }) {
   return (
-    <Card className={cn("py-3", className)}>
+    <Card className="py-3">
       <CardContent className="px-4">
         <p
           dir="ltr"

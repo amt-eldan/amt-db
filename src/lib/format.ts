@@ -20,7 +20,33 @@ export function formatNumber(value: number | string | null | undefined): string 
   return n === null ? "—" : numberFormatter.format(n);
 }
 
+/**
+ * "1 שורות" is wrong in Hebrew, so one gets its own wording:
+ * countLabel(1, "שורה אחת", "שורות") → "שורה אחת"; countLabel(4, …) → "4 שורות".
+ */
+export function countLabel(count: number, one: string, many: string): string {
+  return count === 1 ? one : `${formatNumber(count)} ${many}`;
+}
+
 /** ISO date (yyyy-mm-dd) → dd.mm.yyyy */
+const timestampFormatter = new Intl.DateTimeFormat("he-IL", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/**
+ * A timestamptz → dd.mm.yyyy HH:MM. For "when did we last hear about this
+ * shipment", where the date alone loses the useful part on a busy day.
+ */
+export function formatTimestamp(value: Date | string | null | undefined): string {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : timestampFormatter.format(d);
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const [y, m, d] = iso.split("-");

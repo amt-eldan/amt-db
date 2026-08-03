@@ -56,6 +56,7 @@ export async function approveStaged(
     warnings: staged.warnings ?? [],
   });
   revalidatePath("/intake");
+  revalidatePath("/");
   return { ok: true, message: `הזמנה ${p.orderNumber} אושרה ונוספה למעקב` };
 }
 
@@ -70,5 +71,6 @@ export async function rejectStaged(stagedId: number): Promise<ActionResult> {
     warnings: staged.warnings ?? [],
   });
   revalidatePath("/intake");
+  revalidatePath("/");
   return { ok: true, message: "ההזמנה נדחתה ונמחקה" };
 }

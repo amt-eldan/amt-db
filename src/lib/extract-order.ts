@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { parseDotDate } from "./format";
-import { parseNumeric } from "./numeric";
+import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
 import { isModOrderNumber, stagedPayload } from "./validation";
 
 /**
@@ -24,69 +23,10 @@ const MANUAL_FALLBACK = " ניתן להזין את ההזמנה ידנית בט�
 // injected exactly like src/lib/status.ts so date-range checks are deterministic)
 // ---------------------------------------------------------------------------
 
-function asRecord(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
-
-/** string → trimmed value, or null for empty / non-string. */
-function str(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const t = v.trim();
-  return t === "" ? null : t;
-}
-
-/**
- * The model's loosely-typed number → `number | null`, consistent with the
- * pipeline payload documented in the README (numeric line values arrive as
- * numbers). Anything that is not a number or string is not a number.
- */
-function num(v: unknown): number | null {
-  if (typeof v !== "number" && typeof v !== "string") return null;
-  return parseNumeric(v);
-}
-
-/** Real calendar date behind a yyyy-mm-dd string (rejects 2026-02-31 etc.). */
-function isRealCalendarDate(iso: string): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return false;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  return (
-    dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
-  );
-}
-
-/**
- * ISO (yyyy-mm-dd, real date) as-is; otherwise try parseDotDate; otherwise
- * null and a warning that the original was dropped. A missing value returns
- * null silently — "no date at all" is handled by the caller.
- */
-function isoDate(v: unknown, label: string, warnings: string[]): string | null {
-  const s = typeof v === "string" ? v.trim() : "";
-  if (s === "") return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && isRealCalendarDate(s)) return s;
-  const parsed = parseDotDate(s);
-  if (parsed && isRealCalendarDate(parsed)) return parsed;
-  warnings.push(`${label}: התאריך "${s}" לא זוהה כתאריך תקין והושמט`);
-  return null;
-}
-
 /** year within 2000..today+5y — anything else deserves a human glance. */
 function dateInRange(iso: string, today: Date): boolean {
   const year = Number(iso.slice(0, 4));
   return year >= 2000 && year <= today.getFullYear() + 5;
-}
-
-/** en-US thousands + 2 decimals, e.g. 3355.8 → "3,355.80". */
-function fmtAmount(n: number): string {
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
 }
 
 /**
@@ -337,16 +277,16 @@ export async function extractOrderFromPdf(
     // not APIConnectionError; APIConnectionError (incl. timeouts) extends APIError
     // and must be checked before it.
     if (err instanceof Anthropic.AuthenticationError) {
-      return { ok: false, error: `שגיאת אימות מול Claude — בדוק את ANTHROPIC_API_KEY.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שגיאת אימות בשירות החילוץ — יש לבדוק את מפתח ה-API.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.RateLimitError) {
-      return { ok: false, error: `Claude עמוס כרגע (מגבלת קצב) — נסה שוב בעוד רגע.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שירות החילוץ עמוס כרגע (מגבלת קצב) — נסה שוב בעוד רגע.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.APIConnectionError) {
-      return { ok: false, error: `החילוץ לקח יותר מדי זמן או שנכשל החיבור ל-Claude.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `החילוץ לקח יותר מדי זמן או שנכשל החיבור לשירות החילוץ.${MANUAL_FALLBACK}` };
     }
     if (err instanceof Anthropic.APIError) {
-      return { ok: false, error: `שגיאה מ-Claude בזמן החילוץ.${MANUAL_FALLBACK}` };
+      return { ok: false, error: `שגיאה בשירות החילוץ.${MANUAL_FALLBACK}` };
     }
     return { ok: false, error: `שגיאה לא צפויה בזמן החילוץ.${MANUAL_FALLBACK}` };
   }
@@ -355,7 +295,7 @@ export async function extractOrderFromPdf(
     return { ok: false, error: `המסמך ארוך מדי — פלט החילוץ נקטע (JSON חלקי).${MANUAL_FALLBACK}` };
   }
   if (message.stop_reason === "refusal") {
-    return { ok: false, error: `החילוץ נדחה על ידי המודל.${MANUAL_FALLBACK}` };
+    return { ok: false, error: `החילוץ נדחה.${MANUAL_FALLBACK}` };
   }
 
   const toolUse = message.content.find((block) => block.type === "tool_use");

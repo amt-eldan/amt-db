@@ -1,27 +1,43 @@
-import { getLines, getOpenStatusRows } from "@/db/queries";
-import { OpenOrdersView } from "@/components/open-orders/open-orders-view";
-import { lineStatus } from "@/lib/status";
+import {
+  getCourierInvoices,
+  getLines,
+  getRecentActivity,
+  getStagedCourierInvoices,
+  getStagedOrders,
+  getSupplierInvoices,
+} from "@/db/queries";
+import { DashboardView } from "@/components/dashboard/dashboard-view";
+import { buildDashboard } from "@/lib/dashboard";
 
 export const dynamic = "force-dynamic";
 
-export default async function OpenOrdersPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ archived?: string }>;
-}) {
-  const params = await searchParams;
-  const showArchived = params.archived === "1";
+/**
+ * The landing page: one screen across every module. It reads the same rows the
+ * individual pages read and puts them through lib/dashboard, so a figure here can
+ * never drift from the page it links to.
+ */
+export default async function DashboardPage() {
+  const [lines, supplierInvoices, courierInvoices, stagedCourier, stagedOrders, activity] =
+    await Promise.all([
+      getLines(true), // open and closed: the pipeline and the history
+      getSupplierInvoices(),
+      getCourierInvoices(),
+      getStagedCourierInvoices(),
+      getStagedOrders(),
+      getRecentActivity(8),
+    ]);
 
-  // Only the set that is actually on screen, plus the narrow row set behind the
-  // header cards — which always count open lines, including while the archive is
-  // being viewed.
-  const [lines, openRows] = await Promise.all([getLines(showArchived), getOpenStatusRows()]);
+  const today = new Date();
+  const data = buildDashboard({
+    lines,
+    supplierInvoices,
+    courierInvoices,
+    pendingOrders: stagedOrders.length,
+    pendingCourierInvoices: stagedCourier.length,
+    today,
+  });
 
-  const stats = {
-    open: openRows.length,
-    customers: new Set(openRows.map((r) => r.customerName)).size,
-    late: openRows.filter((r) => lineStatus(r) === "red").length,
-  };
-
-  return <OpenOrdersView lines={lines} stats={stats} showArchived={showArchived} />;
+  return (
+    <DashboardView data={data} activity={activity} today={today.toISOString().slice(0, 10)} />
+  );
 }

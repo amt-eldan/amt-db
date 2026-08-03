@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
+import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,12 +36,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { OpenLineRow } from "@/db/queries";
+import type { LineRow } from "@/db/queries";
 import { formatDate, formatILS, formatNumber } from "@/lib/format";
 import { lineStatus, type LineStatus } from "@/lib/status";
 import { lineValue } from "@/lib/profit";
 import { cn } from "@/lib/utils";
-import { LineEditSheet } from "./line-edit-sheet";
 import { ROW_TINTS, StatusDot, StatusLegend } from "./status-dot";
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
@@ -63,15 +63,15 @@ export function OpenOrdersView({
   stats,
   showArchived,
 }: {
-  lines: OpenLineRow[];
+  lines: LineRow[];
   stats: OpenStats;
   showArchived: boolean;
 }) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [editing, setEditing] = useState<OpenLineRow | null>(null);
-  const [deleting, setDeleting] = useState<OpenLineRow | null>(null);
+  const [editing, setEditing] = useState<LineRow | null>(null);
+  const [deleting, setDeleting] = useState<LineRow | null>(null);
   // Optimistic manual-status overrides, applied immediately on "✓ הגיע".
   const [overrides, setOverrides] = useState<Record<number, string | null>>({});
   const [, startTransition] = useTransition();
@@ -114,7 +114,7 @@ export function OpenOrdersView({
     return Array.from(map.entries());
   }, [filtered]);
 
-  function quickArrived(line: OpenLineRow) {
+  function quickArrived(line: LineRow) {
     setOverrides((prev) => ({ ...prev, [line.lineId]: "הגיע" }));
     startTransition(async () => {
       const result = await setManualStatus(line.lineId, "הגיע");
@@ -152,7 +152,7 @@ export function OpenOrdersView({
     });
   }
 
-  function toggleClosed(line: OpenLineRow) {
+  function toggleClosed(line: LineRow) {
     startTransition(async () => {
       const result = await setLineOpen(line.lineId, !line.isOpen);
       if (result.ok) toast.success(result.message);
@@ -173,7 +173,7 @@ export function OpenOrdersView({
           <Switch
             id="archived"
             checked={showArchived}
-            onCheckedChange={(on) => router.push(on ? "/?archived=1" : "/")}
+            onCheckedChange={(on) => router.push(on ? "/orders?archived=1" : "/orders")}
           />
           <label htmlFor="archived" className="text-muted-foreground cursor-pointer">
             הצג ארכיון
@@ -408,7 +408,7 @@ function LineActions({
   onToggleClosed,
   onDelete,
 }: {
-  line: OpenLineRow & { manualStatus: string | null };
+  line: LineRow & { manualStatus: string | null };
   onArrived: () => void;
   onEdit: () => void;
   onToggleClosed: () => void;

@@ -23,16 +23,21 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
-import type { OpenLineRow } from "@/db/queries";
+import type { LineRow } from "@/db/queries";
 import { MANUAL_STATUSES } from "@/lib/status";
 
 const AUTO = "__auto__";
 
+/**
+ * Shared line editor for the open-orders list and the monthly ledger. It saves
+ * every manual field at once, so `line` must be a full row — a field missing
+ * from it is written back as empty.
+ */
 export function LineEditSheet({
   line,
   onClose,
 }: {
-  line: OpenLineRow | null;
+  line: LineRow | null;
   onClose: () => void;
 }) {
   const router = useRouter();

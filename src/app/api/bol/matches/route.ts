@@ -6,6 +6,7 @@ import { orderLines, type OrderLine } from "@/db/schema";
 import { requireBearer } from "@/lib/api-auth";
 import { evaluateBolMatch } from "@/lib/bol-match";
 import { applyLineFields } from "@/lib/line-fields";
+import { normalizeCarrierStatus } from "@/lib/shipment-status";
 import { bolMatchInput } from "@/lib/validation";
 
 type MatchResult = {
@@ -69,12 +70,26 @@ export async function POST(request: NextRequest) {
     }
 
     const line = existing!; // evaluateBolMatch only returns write:true for a line it found
-    const fields = {
+    const fields: Record<string, unknown> = {
       bol: match.bol,
       carrier: match.carrier,
       bolSource: "auto",
       bolConfidence: match.confidence,
     };
+
+    // The shipment is now trackable, so record where it stands. shipment_status is
+    // the normalized value the /bol screen filters on; the carrier's own wording
+    // goes to delivery_update — but only when that field is still empty, because a
+    // human's note there must not be overwritten by an automated run (the same
+    // never-clobber rule this endpoint already applies to `bol`).
+    if (match.statusText) {
+      fields.shipmentStatus = normalizeCarrierStatus(match.statusText);
+      fields.shipmentStatusAt = new Date();
+      if (!line.deliveryUpdate || line.deliveryUpdate.trim() === "") {
+        fields.deliveryUpdate = match.statusText;
+      }
+    }
+    if (match.etaDate) fields.shipmentEta = match.etaDate;
 
     await applyLineFields(
       line,
@@ -92,14 +107,16 @@ export async function POST(request: NextRequest) {
     // Keep the cached row in step with what was just written, so a second match
     // for the same line in this batch hits the never-overwrite guard instead of
     // reading a stale empty `bol`.
-    byId.set(line.id, { ...line, ...fields });
+    byId.set(line.id, { ...line, ...fields } as OrderLine);
     results.push({ lineId: match.lineId, status: "written" });
   }
 
   const written = results.filter((r) => r.status === "written").length;
   if (written > 0) {
     revalidatePath("/");
+    revalidatePath("/orders");
     revalidatePath("/monthly");
+    revalidatePath("/bol");
   }
 
   return NextResponse.json({

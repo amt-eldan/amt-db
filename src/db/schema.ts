@@ -1,5 +1,6 @@
 import {
   boolean,
+  customType,
   date,
   index,
   integer,
@@ -11,6 +12,11 @@ import {
   timestamp,
   unique,
 } from "drizzle-orm/pg-core";
+
+/** drizzle has no built-in bytea; the driver hands Buffers both ways. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 export const customers = pgTable("customers", {
   id: serial("id").primaryKey(),
@@ -66,6 +72,13 @@ export const orderLines = pgTable(
     // once a human typed or corrected it. Lets the UI flag unreviewed values.
     bolSource: text("bol_source"), // NULL | 'auto' | 'manual'
     bolConfidence: numeric("bol_confidence"), // 0..1, only meaningful for 'auto'
+    // Machine-readable shipment state, normalized from the carrier's wording by
+    // normalizeCarrierStatus(). `delivery_update` above keeps the raw text a human
+    // reads and lineStatus() keys off; this column exists so "still in the air" is a
+    // filter rather than substring-matching carrier prose.
+    shipmentStatus: text("shipment_status"), // NULL (unknown) | see SHIPMENT_STATUSES
+    shipmentStatusAt: timestamp("shipment_status_at", { withTimezone: true }),
+    shipmentEta: date("shipment_eta"),
     notes: text("notes"),
     manualStatus: text("manual_status"), // NULL | 'הגיע' | 'סופק חלקי' | 'מאחר'
     isOpen: boolean("is_open").notNull().default(true),
@@ -80,6 +93,8 @@ export const orderLines = pgTable(
     index("order_lines_order_id_idx").on(t.orderId),
     // Open/archived split (getLines) and the BOL worklist's due-date ordering.
     index("order_lines_open_due_idx").on(t.isOpen, t.contractDueDate),
+    // The in-the-air filter on the bills-of-lading screen.
+    index("order_lines_shipment_idx").on(t.isOpen, t.shipmentStatus),
   ],
 );
 
@@ -95,6 +110,128 @@ export const stagedOrders = pgTable("staged_orders", {
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * Supplier invoices — the documents the buy prices come from. Added by hand or
+ * from a PDF that Claude read; either way one row per invoice, editable after
+ * the fact (no staging step, unlike orders, which fan out into many lines).
+ *
+ * `order_id` is the loose link back to what the invoice is for. It is nullable
+ * and `set null` on delete: an invoice is a record of money owed and must
+ * survive the order it referenced.
+ */
+export const supplierInvoices = pgTable(
+  "supplier_invoices",
+  {
+    id: serial("id").primaryKey(),
+    supplier: text("supplier").notNull(),
+    invoiceNumber: text("invoice_number").notNull(),
+    invoiceDate: date("invoice_date"),
+    poNumber: text("po_number"), // our PO as quoted by the supplier
+    orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+    amount: numeric("amount"), // invoice total as printed on the document
+    currency: text("currency").notNull().default("ILS"),
+    notes: text("notes"),
+    fileName: text("file_name"),
+    source: text("source").notNull().default("manual"), // 'manual' | 'extracted'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  // Same guard as orders: the pair identifies the document, so entering it
+  // twice fails instead of silently duplicating a payable.
+  (t) => [unique("supplier_invoices_number_supplier_unique").on(t.supplier, t.invoiceNumber)],
+);
+
+/**
+ * The uploaded PDF itself, in a table of its own so that listing invoices
+ * cannot accidentally select megabytes of file data.
+ */
+export const supplierInvoiceFiles = pgTable("supplier_invoice_files", {
+  invoiceId: integer("invoice_id")
+    .primaryKey()
+    .references(() => supplierInvoices.id, { onDelete: "cascade" }),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  bytes: bytea("bytes").notNull(),
+});
+
+/**
+ * Courier invoices — what the shipping companies (בלדרים) charge us.
+ *
+ * A supplier invoice is only recorded; a courier invoice has to *land* somewhere:
+ * its money is the `shipping_cost` of the lines it shipped, and that is what the
+ * monthly summary subtracts to get profit. Which is why this one gets a staging
+ * step and supplier invoices do not — an invoice enters the ledger only after a
+ * human said which lines it paid for. Until then it sits in
+ * `staged_courier_invoices` and no `courier_invoices` row exists.
+ */
+export const stagedCourierInvoices = pgTable("staged_courier_invoices", {
+  id: serial("id").primaryKey(),
+  // CourierInvoiceDraft (lib/validation): header + shipments, each shipment
+  // already matched to a line where the tracking number gave it away.
+  payload: jsonb("payload").notNull(),
+  fileName: text("file_name"),
+  mimeType: text("mime_type"),
+  sizeBytes: integer("size_bytes"),
+  // The uploaded PDF travels with the pending row so approving it does not need
+  // a second upload. Never selected when listing — see getStagedCourierInvoices.
+  bytes: bytea("bytes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const courierInvoices = pgTable(
+  "courier_invoices",
+  {
+    id: serial("id").primaryKey(),
+    courier: text("courier").notNull(), // חברת השילוח / הבלדר
+    invoiceNumber: text("invoice_number").notNull(),
+    invoiceDate: date("invoice_date"),
+    amount: numeric("amount"), // invoice total as printed on the document
+    currency: text("currency").notNull().default("ILS"),
+    notes: text("notes"),
+    fileName: text("file_name"),
+    source: text("source").notNull().default("manual"), // 'manual' | 'extracted'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (t) => [unique("courier_invoices_number_courier_unique").on(t.courier, t.invoiceNumber)],
+);
+
+export const courierInvoiceFiles = pgTable("courier_invoice_files", {
+  invoiceId: integer("invoice_id")
+    .primaryKey()
+    .references(() => courierInvoices.id, { onDelete: "cascade" }),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  bytes: bytea("bytes").notNull(),
+});
+
+/**
+ * How much of a courier invoice belongs to one order line. These rows are the
+ * source of truth behind `order_lines.shipping_cost`: it is always the sum of a
+ * line's allocations, so deleting the invoice takes its cost back out of the
+ * monthly profit instead of leaving an unexplained number behind.
+ *
+ * One row per (invoice, line) — a document that lists the same line twice is
+ * summed into a single allocation on approval, so the sum stays well defined.
+ */
+export const courierInvoiceAllocations = pgTable(
+  "courier_invoice_allocations",
+  {
+    id: serial("id").primaryKey(),
+    invoiceId: integer("invoice_id")
+      .notNull()
+      .references(() => courierInvoices.id, { onDelete: "cascade" }),
+    lineId: integer("line_id")
+      .notNull()
+      .references(() => orderLines.id, { onDelete: "cascade" }),
+    amount: numeric("amount").notNull(),
+    bol: text("bol"), // the tracking number on the invoice that matched this line
+    description: text("description"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("courier_allocations_invoice_line_unique").on(t.invoiceId, t.lineId)],
+);
 
 export const auditLog = pgTable(
   "audit_log",
@@ -135,3 +272,6 @@ export type Customer = typeof customers.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderLine = typeof orderLines.$inferSelect;
 export type StagedOrder = typeof stagedOrders.$inferSelect;
+export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
+export type CourierInvoice = typeof courierInvoices.$inferSelect;
+export type CourierInvoiceAllocation = typeof courierInvoiceAllocations.$inferSelect;

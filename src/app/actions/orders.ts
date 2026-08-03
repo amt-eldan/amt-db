@@ -14,6 +14,18 @@ export type ActionResult =
   | { ok: true; message?: string }
   | { ok: false; error: string; duplicate?: boolean };
 
+/**
+ * Every page a line change can show up on: the open-orders list, the monthly
+ * ledger, the bill-of-lading page, and the dashboard that sums all three. Spelled
+ * out once so a new page cannot be forgotten by one caller out of five.
+ */
+function revalidateLinePages() {
+  revalidatePath("/");
+  revalidatePath("/orders");
+  revalidatePath("/monthly");
+  revalidatePath("/bol");
+}
+
 async function getOrCreateCustomer(
   tx: Pick<typeof db, "select" | "insert">,
   name: string,
@@ -85,9 +97,8 @@ export async function createOrder(input: OrderInput): Promise<ActionResult> {
       lines: data.lines.length,
       source: data.sourceFormat,
     });
-    revalidatePath("/");
+    revalidateLinePages();
     revalidatePath("/intake");
-    revalidatePath("/monthly");
     return { ok: true, message: `הזמנה ${data.orderNumber} נוספה למעקב` };
   } catch (e) {
     if (e instanceof DuplicateOrderError) {
@@ -127,7 +138,7 @@ export async function setManualStatus(
     from: existing.manualStatus,
     to: status,
   });
-  revalidatePath("/");
+  revalidateLinePages();
   return { ok: true, previous: existing.manualStatus };
 }
 
@@ -151,8 +162,7 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
   }
 
   await applyLineFields(existing, toWrite);
-  revalidatePath("/");
-  revalidatePath("/monthly");
+  revalidateLinePages();
   return { ok: true, message: "השורה עודכנה" };
 }
 
@@ -169,8 +179,7 @@ export async function setLineOpen(lineId: number, isOpen: boolean): Promise<Acti
     .set({ isOpen, updatedAt: new Date() })
     .where(eq(orderLines.id, lineId));
   await audit("order_line", lineId, isOpen ? "reopen" : "close", { from: existing.isOpen });
-  revalidatePath("/");
-  revalidatePath("/monthly");
+  revalidateLinePages();
   return { ok: true, message: isOpen ? "השורה נפתחה מחדש" : "השורה נסגרה" };
 }
 
@@ -192,7 +201,6 @@ export async function deleteLine(lineId: number): Promise<ActionResult> {
     }
   });
   await audit("order_line", lineId, "delete", { pn: existing.pn, orderId: existing.orderId });
-  revalidatePath("/");
-  revalidatePath("/monthly");
+  revalidateLinePages();
   return { ok: true, message: "השורה נמחקה" };
 }

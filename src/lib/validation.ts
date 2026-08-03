@@ -71,6 +71,95 @@ export const manualFieldsInput = z.object({
     .transform((s) => (s ? s : null)),
 });
 
+/** No currency on the document means shekels. */
+const currencyField = z
+  .string()
+  .trim()
+  .max(10)
+  .nullish()
+  .transform((s) => (s && s !== "" ? s.toUpperCase() : "ILS"));
+
+const optionalId = z
+  .number()
+  .int()
+  .positive()
+  .nullish()
+  .transform((v) => v ?? null);
+
+/**
+ * One supplier invoice, as typed in the form or as read from a PDF. Supplier +
+ * invoice number are the identity of the document, so both are required; the
+ * rest of the fields may be filled in later.
+ */
+export const supplierInvoiceInput = z.object({
+  supplier: z.string().trim().min(1, "שם ספק חובה").max(200),
+  invoiceNumber: z.string().trim().min(1, "מספר חשבונית חובה").max(100),
+  invoiceDate: optionalIsoDate,
+  poNumber: optionalText,
+  orderId: optionalId,
+  amount: optionalNumeric,
+  currency: currencyField,
+  notes: optionalText,
+});
+
+export const supplierInvoiceUpdate = supplierInvoiceInput.extend({
+  id: z.number().int().positive(),
+});
+
+export type SupplierInvoiceInput = z.infer<typeof supplierInvoiceInput>;
+
+/**
+ * One charge on a courier invoice: a shipment, its tracking number, and the line
+ * it belongs to once someone (the matcher or the reviewer) has said which.
+ */
+export const courierShipmentInput = z.object({
+  bol: optionalText,
+  reference: optionalText, // our PO / order number as the courier quotes it
+  description: optionalText,
+  amount: optionalNumeric,
+  lineId: optionalId,
+});
+
+/**
+ * A courier invoice waiting for approval — header plus the shipments it charges
+ * for. One shape for both doors in (PDF extraction and the manual form) and it is
+ * exactly what the staged row stores, so approving is "write what you reviewed".
+ *
+ * `warnings` are the extraction's own remarks, kept with the row so they are still
+ * on screen when someone comes back to it tomorrow.
+ */
+export const courierInvoiceDraft = z.object({
+  courier: z.string().trim().min(1, "שם הבלדר חובה").max(200),
+  invoiceNumber: z.string().trim().min(1, "מספר חשבונית חובה").max(100),
+  invoiceDate: optionalIsoDate,
+  amount: optionalNumeric,
+  currency: currencyField,
+  notes: optionalText,
+  fileName: optionalText,
+  shipments: z.array(courierShipmentInput).default([]),
+  warnings: z.array(z.string()).default([]),
+});
+
+/** Header-only edit of an approved courier invoice; allocations have their own action. */
+export const courierInvoiceUpdate = z.object({
+  id: z.number().int().positive(),
+  courier: z.string().trim().min(1, "שם הבלדר חובה").max(200),
+  invoiceNumber: z.string().trim().min(1, "מספר חשבונית חובה").max(100),
+  invoiceDate: optionalIsoDate,
+  amount: optionalNumeric,
+  currency: currencyField,
+  notes: optionalText,
+});
+
+/** Re-splitting an approved invoice between lines. */
+export const courierAllocationsUpdate = z.object({
+  invoiceId: z.number().int().positive(),
+  shipments: z.array(courierShipmentInput).default([]),
+});
+
+export type CourierShipmentInput = z.infer<typeof courierShipmentInput>;
+export type CourierInvoiceDraft = z.infer<typeof courierInvoiceDraft>;
+
 /** Payload accepted by POST /api/staged (from the external OCR pipeline). */
 export const stagedPayload = z.object({
   customer: z.string().trim().min(1),
@@ -119,6 +208,8 @@ export const bolMatchInput = z.object({
   bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
   carrier: optionalText,
   statusText: optionalText,
+  // Carrier's estimated arrival, when the email states one.
+  etaDate: optionalIsoDate,
   sourceEmailId: optionalText,
   sourceQuote: optionalText,
   confidence: z

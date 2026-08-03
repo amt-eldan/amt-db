@@ -19,8 +19,29 @@
     {
       "idx": 2,
       "version": "7",
-      "when": 1785661005109,
-      "tag": "0002_living_nekra",
+      "when": 1785438843579,
+      "tag": "0002_daily_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785498454359,
+      "tag": "0003_glamorous_kree",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785699420704,
+      "tag": "0004_clumsy_jane_foster",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785771582940,
+      "tag": "0005_gifted_crystal",
       "breakpoints": true
     }
   ]
