@@ -184,28 +184,51 @@ export const stagedPayload = z.object({
 
 /**
  * One bill-of-lading match accepted by POST /api/bol/matches (from the external
- * tracking agent). `lineId` comes from the worklist the agent was handed, so a
- * match is bound to exactly one line rather than re-matched here.
+ * tracking agent).
+ *
+ * Two ways to say which line the number belongs to:
+ *  - `lineId` from the worklist the agent was handed — bound to one line, nothing
+ *    to re-match;
+ *  - the keys the email itself quoted (`pn` / `poNumber` / `orderNumber`), for a
+ *    tracking number that arrived without a worklist behind it. The server then
+ *    finds the line (resolveBolLine) and refuses to guess when several fit.
+ *
+ * One of the two is required — a bill of lading with nothing to attach it to is
+ * not a match.
  */
-export const bolMatchInput = z.object({
-  lineId: z.number().int().positive(),
-  bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
-  carrier: optionalText,
-  statusText: optionalText,
-  // Carrier's estimated arrival, when the email states one.
-  etaDate: optionalIsoDate,
-  sourceEmailId: optionalText,
-  sourceQuote: optionalText,
-  confidence: z
-    .union([z.string(), z.number()])
-    .nullish()
-    .transform((v) => {
-      if (v === null || v === undefined || v === "") return null;
-      const n = typeof v === "string" ? parseFloat(v) : v;
-      if (!Number.isFinite(n)) return null;
-      return String(Math.min(1, Math.max(0, n)));
-    }),
-});
+export const bolMatchInput = z
+  .object({
+    lineId: z
+      .number()
+      .int()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
+    // Search keys as they appear in the email; ignored when lineId is given.
+    pn: optionalText,
+    poNumber: optionalText,
+    orderNumber: optionalText,
+    supplier: optionalText,
+    carrier: optionalText,
+    statusText: optionalText,
+    // Carrier's estimated arrival, when the email states one.
+    etaDate: optionalIsoDate,
+    sourceEmailId: optionalText,
+    sourceQuote: optionalText,
+    confidence: z
+      .union([z.string(), z.number()])
+      .nullish()
+      .transform((v) => {
+        if (v === null || v === undefined || v === "") return null;
+        const n = typeof v === "string" ? parseFloat(v) : v;
+        if (!Number.isFinite(n)) return null;
+        return String(Math.min(1, Math.max(0, n)));
+      }),
+  })
+  .refine((m) => m.lineId !== null || Boolean(m.pn ?? m.poNumber ?? m.orderNumber), {
+    message: "נדרש lineId או מפתח חיפוש (pn / poNumber / orderNumber)",
+  });
 
 export type StagedPayload = z.infer<typeof stagedPayload>;
 export type OrderInput = z.infer<typeof orderInput>;

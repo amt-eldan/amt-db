@@ -13,6 +13,7 @@ import {
   supplierInvoiceFiles,
   supplierInvoices,
 } from "@/db/schema";
+import type { BolCandidateLine } from "@/lib/bol-match";
 import type { CourierLineOption } from "@/lib/courier-match";
 import type { CourierInvoiceDraft } from "@/lib/validation";
 
@@ -171,6 +172,32 @@ export async function getBolWorklist(): Promise<BolWorklistRow[]> {
       ),
     )
     .orderBy(sql`${orderLines.contractDueDate} asc nulls last`, asc(orderLines.id));
+}
+
+/**
+ * Every line a tracking number could belong to, with the keys an email may quote
+ * it by. Feeds resolveBolLine when a match arrives without a lineId — the agent
+ * read a P/N in the mail and never saw our worklist.
+ *
+ * Closed lines and lines that already have a BOL are included on purpose: the
+ * resolver needs to see them to answer "that line is closed" or "that number is
+ * already there" instead of the useless "no match".
+ */
+export async function getBolCandidateLines(): Promise<BolCandidateLine[]> {
+  return db
+    .select({
+      lineId: orderLines.id,
+      orderNumber: orders.orderNumber,
+      pn: orderLines.pn,
+      sku: orderLines.sku,
+      poNumber: orderLines.poNumber,
+      supplier: orderLines.supplier,
+      bol: orderLines.bol,
+      isOpen: orderLines.isOpen,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .orderBy(asc(orderLines.id));
 }
 
 export interface SupplierInvoiceRow {

@@ -21,6 +21,31 @@ describe("bolMatchInput", () => {
     expect(bolMatchInput.safeParse({ ...valid, lineId: 1.5 }).success).toBe(false);
   });
 
+  // A tracking number that arrived on its own: the email quotes a P/N, not our id.
+  it("accepts search keys instead of a lineId", () => {
+    const parsed = bolMatchInput.parse({
+      bol: "1Z999",
+      pn: "CH-USB-2-1.0AB",
+      supplier: "AXTON",
+    });
+    expect(parsed).toMatchObject({
+      lineId: null,
+      pn: "CH-USB-2-1.0AB",
+      poNumber: null,
+      orderNumber: null,
+      supplier: "AXTON",
+    });
+    expect(bolMatchInput.safeParse({ bol: "1Z999", poNumber: "PO-8871" }).success).toBe(true);
+    expect(bolMatchInput.safeParse({ bol: "1Z999", orderNumber: "4441537295" }).success).toBe(true);
+  });
+
+  it("rejects a bol with nothing to attach it to", () => {
+    expect(bolMatchInput.safeParse({ bol: "1Z999" }).success).toBe(false);
+    // Supplier alone cannot identify a line, so it does not count as a key.
+    expect(bolMatchInput.safeParse({ bol: "1Z999", supplier: "AXTON" }).success).toBe(false);
+    expect(bolMatchInput.safeParse({ bol: "1Z999", pn: "   " }).success).toBe(false);
+  });
+
   it("carries confidence as a clamped string (numeric-as-string convention)", () => {
     expect(bolMatchInput.parse({ ...valid, confidence: 0.95 }).confidence).toBe("0.95");
     expect(bolMatchInput.parse({ ...valid, confidence: "0.4" }).confidence).toBe("0.4");
