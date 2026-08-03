@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "@/db";
 import {
   auditLog,
@@ -14,7 +15,12 @@ import {
   supplierInvoices,
 } from "@/db/schema";
 import type { CourierLineOption } from "@/lib/courier-match";
-import type { CourierInvoiceDraft } from "@/lib/validation";
+import {
+  courierInvoiceDraft,
+  courierShipmentInput,
+  type CourierInvoiceDraft,
+  type CourierShipmentInput,
+} from "@/lib/validation";
 
 export interface LineRow {
   lineId: number;
@@ -250,6 +256,12 @@ export interface CourierInvoiceRow {
   /** What this invoice actually put on order lines — may differ from `amount`. */
   allocatedTotal: string | null;
   allocatedLines: number;
+  /**
+   * The document's own itemization as it was reviewed on approval: one entry per
+   * shipment, each with the charges its total is made of. Empty for invoices
+   * approved before this was kept — the allocations are still the record of money.
+   */
+  shipments: CourierShipmentInput[];
   createdAt: Date;
 }
 
@@ -259,7 +271,7 @@ export interface CourierInvoiceRow {
  * its own route.
  */
 export async function getCourierInvoices(): Promise<CourierInvoiceRow[]> {
-  return db
+  const rows = await db
     .select({
       id: courierInvoices.id,
       courier: courierInvoices.courier,
@@ -273,6 +285,7 @@ export async function getCourierInvoices(): Promise<CourierInvoiceRow[]> {
       hasFile: sql<boolean>`${courierInvoiceFiles.invoiceId} is not null`,
       allocatedTotal: sql<string | null>`sum(${courierInvoiceAllocations.amount})`,
       allocatedLines: sql<number>`count(${courierInvoiceAllocations.id})::int`,
+      shipments: courierInvoices.shipments,
       createdAt: courierInvoices.createdAt,
     })
     .from(courierInvoices)
@@ -282,6 +295,7 @@ export async function getCourierInvoices(): Promise<CourierInvoiceRow[]> {
     // courier_invoices columns; the files join contributes only its own key.
     .groupBy(courierInvoices.id, courierInvoiceFiles.invoiceId)
     .orderBy(sql`${courierInvoices.invoiceDate} desc nulls last`, desc(courierInvoices.id));
+  return rows.map((row) => ({ ...row, shipments: readCourierShipments(row.shipments) }));
 }
 
 export interface CourierAllocationRow {
@@ -349,8 +363,55 @@ export async function getStagedCourierInvoices(): Promise<StagedCourierInvoiceRo
     })
     .from(stagedCourierInvoices)
     .orderBy(desc(stagedCourierInvoices.createdAt), desc(stagedCourierInvoices.id));
-  // The payload is written through courierInvoiceDraft, so its shape is ours.
-  return rows.map((row) => ({ ...row, payload: row.payload as CourierInvoiceDraft }));
+  return rows.map((row) => ({ ...row, payload: readCourierDraft(row.payload) }));
+}
+
+/**
+ * A staged payload was written through courierInvoiceDraft — but not necessarily
+ * through today's version of it: a row staged before shipments carried `charges`
+ * has no such field. Reading it back through the schema is what fills the defaults
+ * in, so the review UI never meets a half-shaped draft it will crash on.
+ */
+export function readCourierDraft(payload: unknown): CourierInvoiceDraft {
+  const parsed = courierInvoiceDraft.safeParse(payload);
+  if (parsed.success) return parsed.data;
+
+  // Can't-happen: every staged row went in through the schema. Keep the pending
+  // list renderable rather than losing it all to one unreadable row, and say so
+  // instead of showing shipments nobody can trust.
+  const raw = asDraftish(payload);
+  return {
+    courier: raw.courier ?? "",
+    invoiceNumber: raw.invoiceNumber ?? "",
+    invoiceDate: raw.invoiceDate ?? null,
+    amount: raw.amount ?? null,
+    currency: raw.currency ?? "ILS",
+    notes: raw.notes ?? null,
+    fileName: raw.fileName ?? null,
+    shipments: [],
+    warnings: [
+      ...(Array.isArray(raw.warnings) ? raw.warnings : []),
+      "הנתונים השמורים של החשבונית לא נקראו במלואם — יש להזין את המשלוחים מול המסמך",
+    ],
+  };
+}
+
+function asDraftish(payload: unknown): Partial<CourierInvoiceDraft> {
+  return payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    ? (payload as Partial<CourierInvoiceDraft>)
+    : {};
+}
+
+/**
+ * The shipment list stored on an approved invoice, read back through the schema so
+ * a row written before `charges` existed still comes out well-shaped. Null/absent
+ * (invoices approved before the column existed) means "the document's own
+ * itemization was not kept" — the allocations are still there.
+ */
+export function readCourierShipments(stored: unknown): CourierShipmentInput[] {
+  if (!Array.isArray(stored)) return [];
+  const parsed = z.array(courierShipmentInput).safeParse(stored);
+  return parsed.success ? parsed.data : [];
 }
 
 /** The stored PDF for one approved courier invoice. Used only by the file route. */

@@ -109,14 +109,34 @@ export const supplierInvoiceUpdate = supplierInvoiceInput.extend({
 export type SupplierInvoiceInput = z.infer<typeof supplierInvoiceInput>;
 
 /**
- * One charge on a courier invoice: a shipment, its tracking number, and the line
- * it belongs to once someone (the matcher or the reviewer) has said which.
+ * One component of what a shipment costs, exactly as the invoice itemizes it:
+ * `אגרת מחשב למכס 21.00`, `שירות שחרור ממכס 71.00`, `מע"מ 12.78`. Couriers print
+ * this breakdown and we used to throw it away, keeping only the total — so a
+ * shipping cost of 531.78 arrived with nothing to explain it.
+ *
+ * Informational: the money that reaches an order line is still the shipment's
+ * `amount`. These rows are what makes that amount readable.
+ */
+export const courierChargeInput = z.object({
+  label: z.string().trim().min(1, "תיאור החיוב חובה").max(200),
+  amount: optionalNumeric,
+  kind: z
+    .enum(["service", "tax", "fee", "vat", "discount", "other"])
+    .nullish()
+    .transform((k) => k ?? "other"),
+});
+
+/**
+ * One charge on a courier invoice: a shipment, its tracking number, the line it
+ * belongs to once someone (the matcher or the reviewer) has said which, and the
+ * itemized charges the invoice says its total is made of.
  */
 export const courierShipmentInput = z.object({
   bol: optionalText,
   reference: optionalText, // our PO / order number as the courier quotes it
   description: optionalText,
   amount: optionalNumeric,
+  charges: z.array(courierChargeInput).nullish().transform((c) => c ?? []),
   lineId: optionalId,
 });
 
@@ -157,6 +177,7 @@ export const courierAllocationsUpdate = z.object({
   shipments: z.array(courierShipmentInput).default([]),
 });
 
+export type CourierChargeInput = z.infer<typeof courierChargeInput>;
 export type CourierShipmentInput = z.infer<typeof courierShipmentInput>;
 export type CourierInvoiceDraft = z.infer<typeof courierInvoiceDraft>;
 

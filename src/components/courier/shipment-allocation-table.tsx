@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, Trash2, TriangleAlert } from "lucide-react";
+import React, { useState } from "react";
+import { ChevronDown, ChevronUp, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,15 +15,17 @@ import {
 } from "@/components/ui/table";
 import { allocationTotals, type CourierLineOption } from "@/lib/courier-match";
 import { formatILS } from "@/lib/format";
-import type { CourierShipmentInput } from "@/lib/validation";
+import type { CourierChargeInput, CourierShipmentInput } from "@/lib/validation";
 import { cn } from "@/lib/utils";
 import { LinePicker } from "./line-picker";
+import { ChargeSummary, ShipmentChargesEditor } from "./shipment-charges-editor";
 
 const emptyShipment: CourierShipmentInput = {
   bol: null,
   reference: null,
   description: null,
   amount: null,
+  charges: [],
   lineId: null,
 };
 
@@ -52,6 +55,11 @@ export function ShipmentAllocationTable({
 }) {
   const totals = allocationTotals(shipments, invoiceAmount);
   const byId = new Map(lines.map((l) => [l.lineId, l]));
+  // Breakdowns start open where there is one to read: it is the answer to "what is
+  // this 531.78?", and a reviewer who has to go looking for it will not.
+  const [expanded, setExpanded] = useState<Set<number>>(
+    () => new Set(shipments.flatMap((s, i) => (s.charges.length > 0 ? [i] : []))),
+  );
 
   function set(index: number, key: keyof CourierShipmentInput, value: string | number | null) {
     onChange(
@@ -59,6 +67,31 @@ export function ShipmentAllocationTable({
         i === index ? { ...s, [key]: value === "" ? null : value } : s,
       ),
     );
+  }
+
+  function setCharges(index: number, charges: CourierChargeInput[]) {
+    onChange(shipments.map((s, i) => (i === index ? { ...s, charges } : s)));
+  }
+
+  function toggle(index: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(index)) next.add(index);
+      return next;
+    });
+  }
+
+  /** Rows are keyed by position, so removing one shifts every state above it. */
+  function remove(index: number) {
+    setExpanded((prev) => {
+      const next = new Set<number>();
+      for (const i of prev) {
+        if (i < index) next.add(i);
+        else if (i > index) next.add(i - 1);
+      }
+      return next;
+    });
+    onChange(shipments.filter((_, i) => i !== index));
   }
 
   return (
@@ -73,6 +106,18 @@ export function ShipmentAllocationTable({
         {totals.unmatched > 0 && (
           <Badge variant="outline" className="font-normal text-amber-600 border-amber-300">
             {totals.unmatched} משלוחים ללא שורה
+          </Badge>
+        )}
+        {totals.vat !== 0 && (
+          <Badge variant="secondary" className="font-normal">
+            מע&quot;מ בפירוט: <bdi dir="ltr" className="font-medium">{formatILS(totals.vat)}</bdi>
+          </Badge>
+        )}
+        {totals.unreconciled > 0 && (
+          <Badge variant="outline" className="font-normal text-amber-600 border-amber-300">
+            {totals.unreconciled === 1
+              ? "פירוט אחד אינו מסתכם לעלות המשלוח"
+              : `${totals.unreconciled} פירוטים אינם מסתכמים לעלות המשלוח`}
           </Badge>
         )}
         {totals.difference !== null && Math.abs(totals.difference) >= 0.01 && (
@@ -113,8 +158,10 @@ export function ShipmentAllocationTable({
             )}
             {shipments.map((shipment, i) => {
               const line = shipment.lineId === null ? null : byId.get(shipment.lineId) ?? null;
+              const open = expanded.has(i);
               return (
-                <TableRow key={i} className={cn(shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10")}>
+              <React.Fragment key={i}>
+                <TableRow className={cn(shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10")}>
                   <TableCell>
                     <Input
                       dir="ltr"
@@ -146,10 +193,28 @@ export function ShipmentAllocationTable({
                       dir="ltr"
                       className="h-8"
                       inputMode="decimal"
+                      placeholder={shipment.charges.length > 0 ? "מסכום הפירוט" : undefined}
                       disabled={disabled}
                       value={shipment.amount ?? ""}
                       onChange={(e) => set(i, "amount", e.target.value)}
                     />
+                    <button
+                      type="button"
+                      className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                      onClick={() => toggle(i)}
+                      aria-expanded={open}
+                    >
+                      {open ? (
+                        <ChevronUp className="size-3 shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 shrink-0" />
+                      )}
+                      {shipment.charges.length === 0 ? (
+                        <span>פירוט</span>
+                      ) : (
+                        <ChargeSummary shipment={shipment} />
+                      )}
+                    </button>
                   </TableCell>
                   <TableCell>
                     <LinePicker
@@ -171,12 +236,24 @@ export function ShipmentAllocationTable({
                       size="icon"
                       className="size-7 text-muted-foreground"
                       disabled={disabled}
-                      onClick={() => onChange(shipments.filter((_, idx) => idx !== i))}
+                      onClick={() => remove(i)}
                     >
                       <Trash2 className="size-3.5" />
                     </Button>
                   </TableCell>
                 </TableRow>
+                {open && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={6} className="pt-0">
+                      <ShipmentChargesEditor
+                        shipment={shipment}
+                        disabled={disabled}
+                        onChange={(charges) => setCharges(i, charges)}
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </React.Fragment>
               );
             })}
           </TableBody>

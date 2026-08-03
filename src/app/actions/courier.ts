@@ -195,6 +195,11 @@ export async function approveCourierInvoice(
           amount: draft.amount,
           currency: draft.currency,
           notes: draft.notes,
+          // Keep the document's own itemization, not just where the money landed:
+          // the allocations say a line was charged 531.78, these say it was customs
+          // fees + clearance + VAT. The staged row (and its copy of this) is deleted
+          // a few statements below, so this is the last chance to keep it.
+          shipments: draft.shipments,
           fileName: staged.fileName ?? draft.fileName,
           source: staged.bytes ? "extracted" : "manual",
         })
@@ -357,6 +362,13 @@ export async function updateCourierAllocations(input: unknown): Promise<ActionRe
           .insert(courierInvoiceAllocations)
           .values(allocations.map((a) => ({ ...a, invoiceId })));
       }
+      // The reviewed list is the document's record and it was just re-edited, so it
+      // is rewritten alongside the allocations rather than left describing the
+      // previous split.
+      await tx
+        .update(courierInvoices)
+        .set({ shipments, updatedAt: new Date() })
+        .where(eq(courierInvoices.id, invoiceId));
       return applyShippingCosts(tx, [
         ...previous.map((p) => p.lineId),
         ...allocations.map((a) => a.lineId),

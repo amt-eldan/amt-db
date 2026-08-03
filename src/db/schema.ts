@@ -166,6 +166,13 @@ export const courierInvoices = pgTable(
     amount: numeric("amount"), // invoice total as printed on the document
     currency: text("currency").notNull().default("ILS"),
     notes: text("notes"),
+    // CourierShipmentInput[] (lib/validation): the reviewed shipment list, each
+    // with the charges the document said its total is made of. The allocations
+    // table records where the money *went*; this records what the document *said*,
+    // and it is the only thing left that can explain a shipping cost of 531.78 as
+    // "customs fees + clearance + VAT" once the staged row is gone. Null on
+    // invoices approved before it existed.
+    shipments: jsonb("shipments"),
     fileName: text("file_name"),
     source: text("source").notNull().default("manual"), // 'manual' | 'extracted'
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

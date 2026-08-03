@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
-import type { CourierShipmentInput } from "./validation";
+import type { CourierChargeInput, CourierShipmentInput } from "./validation";
 
 /**
  * A courier invoice read out of a PDF: the header, plus one row per shipment it
@@ -8,6 +8,11 @@ import type { CourierShipmentInput } from "./validation";
  * number that ties a charge to an order line, which is what lets the cost reach
  * the monthly summary. `lineId` is never guessed by the model; matching happens
  * in code (lib/courier-match) and is confirmed by a human.
+ *
+ * Each shipment also carries the invoice's own itemization of its cost (`charges`)
+ * where the document prints one, so a shipping cost of 531.78 arrives with the
+ * customs fees, clearance service and VAT that make it up rather than as a lump
+ * sum nobody can account for.
  */
 export interface ExtractedCourierInvoice {
   courier: string;
@@ -33,23 +38,91 @@ const SHEKEL = /^(ils|nis|₪|שקל|ש"ח|שח)$/i;
 // injected like the other extractors so the date checks are deterministic)
 // ---------------------------------------------------------------------------
 
+const CHARGE_KINDS = new Set<CourierChargeInput["kind"]>([
+  "service",
+  "tax",
+  "fee",
+  "vat",
+  "discount",
+  "other",
+]);
+
+function chargeKind(value: unknown): CourierChargeInput["kind"] {
+  const kind = str(value)?.toLowerCase() as CourierChargeInput["kind"] | undefined;
+  return kind && CHARGE_KINDS.has(kind) ? kind : "other";
+}
+
+/**
+ * The itemized components of one shipment's cost. A component with no label
+ * explains nothing, so it is dropped rather than shown as a nameless number.
+ */
+function normalizeCharges(raw: unknown): CourierChargeInput[] {
+  if (!Array.isArray(raw)) return [];
+  const charges: CourierChargeInput[] = [];
+  for (const item of raw) {
+    const obj = asRecord(item);
+    const label = str(obj.label) ?? str(obj.description);
+    if (!label) continue;
+    const amount = num(obj.amount);
+    charges.push({
+      label,
+      amount: amount === null ? null : String(amount),
+      kind: chargeKind(obj.kind),
+    });
+  }
+  return charges;
+}
+
+/** Money adds up in agorot: 0.1 + 0.2 must not become 0.30000000000000004. */
+function sumMoney(values: number[]): number {
+  return values.reduce((acc, v) => acc + Math.round(v * 100), 0) / 100;
+}
+
+/** How a warning names the shipment it is about, when the reviewer has to find it. */
+function shipmentLabel(
+  bol: string | null,
+  reference: string | null,
+  description: string | null,
+  index: number,
+): string {
+  return bol ?? reference ?? description ?? `שורה ${index + 1}`;
+}
+
 function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentInput[] {
   if (!Array.isArray(raw)) return [];
   const shipments: CourierShipmentInput[] = [];
   let missingAmount = 0;
+  const derived: string[] = [];
+  const mismatched: string[] = [];
 
-  for (const item of raw) {
+  raw.forEach((item, index) => {
     const obj = asRecord(item);
     const bol = str(obj.trackingNumber) ?? str(obj.bol);
     const reference = str(obj.reference);
-    const amount = num(obj.amount);
+    const charges = normalizeCharges(obj.charges);
+    let amount = num(obj.amount);
     // The description carries the shipment's own date when it has one: it is
     // context for the reviewer, not a field anything computes with.
     const date = str(obj.date);
     const description = [str(obj.description), date].filter(Boolean).join(" · ") || null;
 
     // A row with nothing on it is a table artifact, not a charge.
-    if (!bol && !reference && !description && amount === null) continue;
+    if (!bol && !reference && !description && amount === null && charges.length === 0) return;
+
+    // The breakdown is what the total is made of, so the two must agree. When the
+    // document itemized the charges but no line total was read, the components are
+    // the better source — adding them up is not a guess.
+    const itemized = charges
+      .map((c) => (c.amount === null ? null : Number(c.amount)))
+      .filter((v): v is number => v !== null);
+    const chargeSum = itemized.length === 0 ? null : sumMoney(itemized);
+    const label = shipmentLabel(bol, reference, description, index);
+    if (amount === null && chargeSum !== null) {
+      amount = chargeSum;
+      derived.push(label);
+    } else if (amount !== null && chargeSum !== null && Math.abs(chargeSum - amount) >= 0.01) {
+      mismatched.push(`${label}: פירוט ${fmtAmount(chargeSum)} מול סכום ${fmtAmount(amount)}`);
+    }
     if (amount === null) missingAmount++;
 
     shipments.push({
@@ -57,9 +130,10 @@ function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentIn
       reference,
       description,
       amount: amount === null ? null : String(amount),
+      charges,
       lineId: null,
     });
-  }
+  });
 
   if (missingAmount > 0) {
     warnings.push(
@@ -67,6 +141,14 @@ function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentIn
         ? "למשלוח אחד בחשבונית לא זוהה סכום — יש להשלים ידנית"
         : `ל-${missingAmount} משלוחים בחשבונית לא זוהה סכום — יש להשלים ידנית`,
     );
+  }
+  if (derived.length > 0) {
+    warnings.push(
+      `עלות המשלוח חושבה מסכום פירוט החיובים (${derived.join(", ")}) — יש לוודא מול המסמך`,
+    );
+  }
+  if (mismatched.length > 0) {
+    warnings.push(`פירוט החיובים אינו מסתכם לעלות המשלוח — ${mismatched.join("; ")}`);
   }
   return shipments;
 }
@@ -136,6 +218,23 @@ export function normalizeExtractedCourierInvoice(
         `סכום המשלוחים (${fmtAmount(sum)}) אינו תואם את סכומי החשבונית (${fmtAmount(amount)}) — יש לבדוק אם חסר משלוח או חיוב נוסף`,
       );
     }
+
+    // The header prints its own VAT figure, so the VAT rows in the breakdowns have
+    // something to be checked against — the cheapest way to catch a component read
+    // off the wrong row.
+    const headerVat = num(obj.vatAmount);
+    const itemizedVat = sumMoney(
+      shipments.flatMap((s) =>
+        s.charges
+          .filter((c) => c.kind === "vat" && c.amount !== null)
+          .map((c) => Number(c.amount)),
+      ),
+    );
+    if (headerVat !== null && itemizedVat > 0 && Math.abs(itemizedVat - headerVat) >= 0.01) {
+      warnings.push(
+        `סך המע"מ בפירוט המשלוחים (${fmtAmount(itemizedVat)}) אינו תואם את המע"מ בחשבונית (${fmtAmount(headerVat)}) — יש לבדוק את פירוט החיובים`,
+      );
+    }
   }
 
   const notes = [str(obj.summary), str(obj.notes)].filter(Boolean).join(" · ") || null;
@@ -174,13 +273,26 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מחשבוניות של חב
 - reference = מספר האסמכתא שלנו שהבלדר מצטט (Reference, Shipper Reference, "הזמנתכם") — לרוב מספר הזמנת רכש או מספר הזמנה.
 - description = תיאור קצר (יעד, סוג שירות, משקל) — עד שורה אחת.
 - date = תאריך המשלוח בפורמט yyyy-mm-dd, אם מופיע.
-- amount = החיוב עבור אותו משלוח בלבד, כפי שמופיע בשורה. אל תחשב ואל תפצל בעצמך.
+- amount = הסכום הכולל של אותו משלוח בלבד, כפי שהחשבונית מסכמת אותו (שורת "סה"כ" של המשלוח, כולל מע"מ אם היא כוללת אותו). אל תחשב ואל תפצל בעצמך.
 - אל תמציא מספרי מעקב. משלוח בלי מספר מעקב — החזר אותו עם reference ו-description בלבד.
 - שורות שאינן משלוח (סה"כ, מע"מ, הנחה) אינן shipments. חיוב נוסף שחל על כל החשבונית (למשל היטל דלק) אפשר להחזיר כמשלוח בלי מספר מעקב, עם description שמסביר מה זה.
+
+פירוט החיובים של כל משלוח (charges) — חשוב לא פחות:
+- הרבה חשבוניות בלדר מפרטות ממה מורכב הסכום של כל משלוח: אגרות, מיסי יבוא, שירות שחרור ממכס, דמי טיפול, היטל דלק, מע"מ. החזר כל מרכיב כזה כשורה ב-charges של המשלוח שהוא שייך לו.
+- דוגמה מחשבונית מיסי יבוא של DHL: משלוח אחד עם charges של "מע"מ מהצהרת יבוא" 378.00, "אגרת מחשב למכס" 21.00, "אגרת ביטחון למכס" 49.00, "שירות שחרור ממכס" 71.00 ו-"מע"מ" 12.78, ו-amount 531.78 שהוא שורת ה-סה"כ שלו.
+- ב-FedEx / UPS / TNT הפירוט מופיע לרוב באנגלית (Fuel Surcharge, Duty, Tax, Clearance Fee, Remote Area, VAT) ולעיתים בשורות מתחת למשלוח — אותו דבר בדיוק: כל שורה כזו היא charge של המשלוח שמעליה.
+- label = התיאור כפי שהוא מודפס בחשבונית, בשפת המסמך. אל תתרגם ואל תקצר לקוד.
+- amount = הסכום של אותו מרכיב בלבד.
+- kind = סוג המרכיב: "vat" למע"מ בלבד, "tax" למיסי יבוא ומכס, "fee" לאגרות ודמי טיפול קבועים, "service" לשירותי שילוח ושחרור והיטלים, "discount" להנחה או זיכוי (סכום שלילי), "other" כשלא ברור.
+- מלכודת חשובה: אל תחזיר את שורת ה-סה"כ של המשלוח כ-charge. היא ה-amount של המשלוח, ולא מרכיב שלו — אחרת הפירוט יסתכם בכפליים.
+- מלכודת שנייה: אל תחזיר מרכיבי חיוב כמשלוחים נפרדים. הם נכנסים ל-charges של המשלוח שלהם.
+- מרכיבי הפירוט של משלוח צריכים להסתכם ל-amount שלו. אם בחשבונית הם לא מסתכמים — החזר אותם כפי שהם והוסף warning; אל "תתקן" מספרים.
+- אם החשבונית אינה מפרטת ממה מורכב הסכום — החזר charges ריק. אל תפצל סכום בעצמך.
 
 סכומים:
 - subtotalAmount = הסכום לפני מע"מ.
 - totalAmount = הסכום הכולל לתשלום, כולל מע"מ.
+- vatAmount = סך המע"מ בחשבונית, אם מודפס ("סה"כ מע"מ", VAT).
 - אם מופיע רק אחד מהם — החזר אותו בשדה המתאים והשמט את השני. אל תחשב מע"מ בעצמך.
 - currency = מטבע המסמך (ILS, USD, EUR). אם המטבע זר אל תמיר לשקלים והוסף warning.
 
@@ -194,7 +306,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מחשבוניות של חב
 const SUBMIT_COURIER_INVOICE_TOOL: Anthropic.Tool = {
   name: "submit_courier_invoice",
   description:
-    "מחזיר את הנתונים המחולצים מחשבונית הבלדר, כולל שורה לכל משלוח. השמט כל שדה שלא נקרא בבירור מהמסמך — אל תמציא. warnings תמיד נדרש (גם אם ריק).",
+    "מחזיר את הנתונים המחולצים מחשבונית הבלדר: שורה לכל משלוח, ולכל משלוח את פירוט החיובים שמרכיבים את הסכום שלו. השמט כל שדה שלא נקרא בבירור מהמסמך — אל תמציא. warnings תמיד נדרש (גם אם ריק).",
   input_schema: {
     type: "object",
     properties: {
@@ -206,6 +318,7 @@ const SUBMIT_COURIER_INVOICE_TOOL: Anthropic.Tool = {
       invoiceDate: { type: "string", description: "תאריך הוצאת החשבונית בפורמט yyyy-mm-dd." },
       subtotalAmount: { type: "number", description: 'הסכום לפני מע"מ.' },
       totalAmount: { type: "number", description: 'הסכום הכולל לתשלום, כולל מע"מ.' },
+      vatAmount: { type: "number", description: 'סך המע"מ בחשבונית, אם מודפס.' },
       currency: { type: "string", description: "מטבע המסמך (ILS, USD, EUR וכו')." },
       shipments: {
         type: "array",
@@ -223,7 +336,32 @@ const SUBMIT_COURIER_INVOICE_TOOL: Anthropic.Tool = {
             },
             description: { type: "string", description: "יעד / סוג שירות / משקל, עד שורה אחת." },
             date: { type: "string", description: "תאריך המשלוח בפורמט yyyy-mm-dd." },
-            amount: { type: "number", description: "החיוב עבור המשלוח הזה בלבד." },
+            amount: {
+              type: "number",
+              description: 'סה"כ החיוב עבור המשלוח הזה בלבד, כפי שהחשבונית מסכמת אותו.',
+            },
+            charges: {
+              type: "array",
+              description:
+                'מרכיבי הסכום של המשלוח כפי שהחשבונית מפרטת אותם (אגרות, מיסי יבוא, שירות שחרור, היטל דלק, מע"מ). בלי שורת ה-סה"כ עצמה. ריק אם אין פירוט.',
+              items: {
+                type: "object",
+                properties: {
+                  label: {
+                    type: "string",
+                    description: "תיאור המרכיב כפי שהוא מודפס בחשבונית, בשפת המסמך.",
+                  },
+                  amount: { type: "number", description: "הסכום של המרכיב הזה בלבד." },
+                  kind: {
+                    type: "string",
+                    enum: ["service", "tax", "fee", "vat", "discount", "other"],
+                    description:
+                      'vat = מע"מ, tax = מיסי יבוא ומכס, fee = אגרה או דמי טיפול, service = שילוח / שחרור / היטל, discount = הנחה או זיכוי, other = לא ברור.',
+                  },
+                },
+                required: ["label"],
+              },
+            },
           },
         },
       },
@@ -259,7 +397,10 @@ export async function extractCourierInvoiceFromPdf(
   try {
     message = await anthropic.messages.create({
       model: process.env.EXTRACT_MODEL ?? "claude-sonnet-5",
-      max_tokens: 8000, // a courier invoice can list dozens of shipments
+      // A courier invoice can list dozens of shipments, and each one now carries
+      // its charge breakdown too — the output per shipment is several times what
+      // it was. Truncation here costs the whole extraction (stop_reason below).
+      max_tokens: 16_000,
       thinking: { type: "disabled" },
       system: SYSTEM_PROMPT,
       tools: [SUBMIT_COURIER_INVOICE_TOOL],
@@ -274,7 +415,7 @@ export async function extractCourierInvoiceFromPdf(
             },
             {
               type: "text",
-              text: `חלץ את פרטי חשבונית הבלדר מהמסמך המצורף (שם הקובץ: ${fileName}), כולל שורה לכל משלוח, והחזר אותם דרך הכלי submit_courier_invoice.`,
+              text: `חלץ את פרטי חשבונית הבלדר מהמסמך המצורף (שם הקובץ: ${fileName}): שורה לכל משלוח, ולכל משלוח את פירוט החיובים שמרכיבים את הסכום שלו. החזר את הנתונים דרך הכלי submit_courier_invoice.`,
             },
           ],
         },

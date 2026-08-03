@@ -84,11 +84,12 @@ export async function POST(request: NextRequest) {
   const parsed = courierInvoiceDraft.safeParse({
     ...invoice,
     fileName: file.name,
-    shipments: matched.map(({ bol, reference, description, amount, lineId }) => ({
+    shipments: matched.map(({ bol, reference, description, amount, charges, lineId }) => ({
       bol,
       reference,
       description,
       amount,
+      charges,
       lineId,
     })),
     warnings,

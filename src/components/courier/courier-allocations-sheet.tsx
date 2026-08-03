@@ -65,14 +65,21 @@ function AllocationsForm({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [shipments, setShipments] = useState<CourierShipmentInput[]>(
-    allocations.map((a) => ({
-      bol: a.bol,
-      reference: null,
-      description: a.description,
-      amount: a.amount,
-      lineId: a.lineId,
-    })),
+  // The reviewed list kept with the invoice is the better starting point: it still
+  // has the charges the document itemized, which the allocations table does not
+  // store. Invoices approved before it was kept fall back to their allocations, so
+  // re-splitting an old invoice works exactly as it did.
+  const [shipments, setShipments] = useState<CourierShipmentInput[]>(() =>
+    invoice.shipments.length > 0
+      ? invoice.shipments
+      : allocations.map((a) => ({
+          bol: a.bol,
+          reference: null,
+          description: a.description,
+          amount: a.amount,
+          charges: [],
+          lineId: a.lineId,
+        })),
   );
 
   function save() {

@@ -9,12 +9,28 @@
  * unmatched shipment stays unmatched until a human picks the line.
  */
 
+/**
+ * What kind of component a charge is. Only `vat` and `discount` change any
+ * arithmetic (VAT is reported separately, a discount is expected to be negative);
+ * the rest exist so the reviewer can read the breakdown at a glance.
+ */
+export type CourierChargeKind = "service" | "tax" | "fee" | "vat" | "discount" | "other";
+
+/** One component of a shipment's cost, as the invoice itemizes it. */
+export interface CourierCharge {
+  label: string; // 'אגרת מחשב למכס', 'מע"מ', 'Fuel Surcharge'
+  amount: string | null; // numeric string (validated), ILS
+  kind: CourierChargeKind;
+}
+
 /** One charge on a courier invoice: one shipment, one tracking number. */
 export interface CourierShipment {
   bol: string | null;
   reference: string | null; // our PO / order number as the courier quotes it
   description: string | null;
   amount: string | null; // numeric string (validated), ILS
+  /** What the invoice says `amount` is made of — empty when it did not say. */
+  charges: CourierCharge[];
   lineId: number | null; // filled by the matcher or by the reviewer
 }
 
@@ -86,6 +102,86 @@ export function splitAmount(total: number, parts: number): string[] {
   });
 }
 
+/** How the itemized charges add up. Null sums mean "the document did not say". */
+export interface ChargeTotals {
+  /** Sum of the components that carry an amount, or null when none do. */
+  sum: number | null;
+  /** How much of that sum is VAT (0 when the breakdown lists none). */
+  vat: number;
+  /** Components whose amount could not be read. */
+  missing: number;
+  /** sum − the shipment's own total, or null when either side is unknown. */
+  difference: number | null;
+}
+
+/**
+ * Read one shipment's breakdown. Kept here rather than in the UI so the review
+ * table, the extraction's warnings and the tests all reconcile the same way.
+ *
+ * `tolerance` absorbs the agora-level slack that splitting a shipment across
+ * several lines leaves behind: each component is rounded on its own, so a
+ * breakdown of n rows can miss its total by up to n agorot without anything being
+ * wrong. Callers that reconcile an unsplit shipment pass nothing and get an exact
+ * comparison.
+ */
+export function chargeTotals(shipment: CourierShipment, tolerance = 0): ChargeTotals {
+  const amounts: number[] = [];
+  const vatAmounts: number[] = [];
+  let missing = 0;
+  for (const charge of shipment.charges) {
+    const amount = toNumber(charge.amount);
+    if (amount === null) {
+      missing++;
+      continue;
+    }
+    amounts.push(amount);
+    if (charge.kind === "vat") vatAmounts.push(amount);
+  }
+
+  const sum = amounts.length === 0 ? null : sumMoney(amounts);
+  const total = toNumber(shipment.amount);
+  const gap = sum === null || total === null ? null : sumMoney([sum, -total]);
+  return {
+    sum,
+    vat: sumMoney(vatAmounts),
+    missing,
+    difference: gap !== null && Math.abs(gap) <= tolerance ? 0 : gap,
+  };
+}
+
+/** The slack `chargeTotals` should allow for a breakdown of this many rows. */
+export function chargeTolerance(charges: CourierCharge[]): number {
+  return charges.length * 0.01;
+}
+
+/**
+ * What this shipment costs: the total the courier printed, or — when it printed
+ * only the components — what they add up to. A reviewer who types the breakdown
+ * and leaves the total blank gets the cost allocated all the same, instead of the
+ * row being silently dropped for having no amount.
+ */
+export function shipmentTotal(shipment: CourierShipment): number | null {
+  return toNumber(shipment.amount) ?? chargeTotals(shipment).sum;
+}
+
+/**
+ * Split a breakdown the same way its total is split, so every part keeps a
+ * breakdown that explains its own amount rather than repeating the whole bill.
+ * A component with no amount stays without one.
+ */
+function splitCharges(charges: CourierCharge[], parts: number): CourierCharge[][] {
+  const perCharge = charges.map((charge) => {
+    const amount = toNumber(charge.amount);
+    return amount === null ? null : splitAmount(amount, parts);
+  });
+  return Array.from({ length: parts }, (_, i) =>
+    charges.map((charge, j) => {
+      const split = perCharge[j];
+      return split ? { ...charge, amount: split[i] } : { ...charge };
+    }),
+  );
+}
+
 /**
  * Propose a line for every shipment on the invoice, by tracking number first and
  * by the quoted PO/order number only as a fallback. A shipment that covers
@@ -142,13 +238,15 @@ export function matchShipmentsToLines(
       continue;
     }
 
-    const amount = toNumber(shipment.amount);
+    const amount = shipmentTotal(shipment);
     const parts = amount === null ? null : splitAmount(amount, matches.length);
+    const chargeParts = splitCharges(shipment.charges, matches.length);
     matches.forEach((line, i) => {
       result.push({
         ...shipment,
         lineId: line.lineId,
         amount: parts ? parts[i] : null,
+        charges: chargeParts[i],
         matchedBy,
         splitCount: matches.length,
       });
@@ -167,7 +265,7 @@ export function matchShipmentsToLines(
 export function allocationsFromShipments(shipments: CourierShipment[]): CourierAllocationDraft[] {
   const byLine = new Map<number, { amounts: number[]; bols: string[]; notes: string[] }>();
   for (const shipment of shipments) {
-    const amount = toNumber(shipment.amount);
+    const amount = shipmentTotal(shipment);
     if (shipment.lineId === null || amount === null) continue;
     const entry = byLine.get(shipment.lineId) ?? { amounts: [], bols: [], notes: [] };
     entry.amounts.push(amount);
@@ -195,6 +293,10 @@ export interface AllocationTotals {
   lines: number;
   /** allocated − invoice total, or null when the invoice has no total. */
   difference: number | null;
+  /** VAT the itemized breakdowns account for, across every shipment. */
+  vat: number;
+  /** Shipments whose breakdown does not add up to their own total. */
+  unreconciled: number;
 }
 
 /** What the review card shows above the table: does the split add up to the bill? */
@@ -205,10 +307,13 @@ export function allocationTotals(
   const allocations = allocationsFromShipments(shipments);
   const allocated = sumMoney(allocations.map((a) => Number(a.amount)));
   const total = toNumber(invoiceAmount);
+  const breakdowns = shipments.map((s) => chargeTotals(s, chargeTolerance(s.charges)));
   return {
     allocated,
     unmatched: shipments.filter((s) => s.lineId === null).length,
     lines: allocations.length,
     difference: total === null ? null : sumMoney([allocated, -total]),
+    vat: sumMoney(breakdowns.map((b) => b.vat)),
+    unreconciled: breakdowns.filter((b) => b.difference !== null && b.difference !== 0).length,
   };
 }
