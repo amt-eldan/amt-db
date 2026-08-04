@@ -134,10 +134,24 @@ export const courierChargeInput = z.object({
 export const courierShipmentInput = z.object({
   bol: optionalText,
   reference: optionalText, // our PO / order number as the courier quotes it
+  // Customs' id for the import, not an asmachta of ours. It has a field of its own
+  // so it stops being crammed into `reference`, where it never matched anything and
+  // could collide with a real order number and place the cost on the wrong line.
+  customsDeclaration: optionalText,
+  shipper: optionalText, // "פרטי השולח" — the supplier key's input
+  shipmentDate: optionalIsoDate,
   description: optionalText,
   amount: optionalNumeric,
   charges: z.array(courierChargeInput).nullish().transform((c) => c ?? []),
   lineId: optionalId,
+  // Which key placed this shipment. Persisted because "supplier" means "guessed",
+  // and that has to still be visible when the row is reviewed tomorrow. Nullish:
+  // rows staged before this field existed read back as null, which is "unknown"
+  // and — correctly — not low-confidence, since those were all key matches.
+  matchedBy: z
+    .enum(["bol", "po", "order", "supplier", "manual"])
+    .nullish()
+    .transform((m) => m ?? null),
 });
 
 /**

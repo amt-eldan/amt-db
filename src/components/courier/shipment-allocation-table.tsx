@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ChevronDown, ChevronUp, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { allocationTotals, type CourierLineOption } from "@/lib/courier-match";
+import {
+  acceptGuess,
+  allocationTotals,
+  isLowConfidence,
+  type CourierLineOption,
+} from "@/lib/courier-match";
 import { formatILS } from "@/lib/format";
 import type { CourierChargeInput, CourierShipmentInput } from "@/lib/validation";
 import { cn } from "@/lib/utils";
@@ -23,10 +28,15 @@ import { ChargeSummary, ShipmentChargesEditor } from "./shipment-charges-editor"
 const emptyShipment: CourierShipmentInput = {
   bol: null,
   reference: null,
+  customsDeclaration: null,
+  shipper: null,
+  shipmentDate: null,
   description: null,
   amount: null,
   charges: [],
   lineId: null,
+  // A row the reviewer added by hand is their own decision from the first keystroke.
+  matchedBy: "manual",
 };
 
 /**
@@ -69,6 +79,23 @@ export function ShipmentAllocationTable({
     );
   }
 
+  /**
+   * Picking a line is the reviewer taking ownership of it, so it also settles any
+   * guess on that row — whether they accepted the suggestion or replaced it.
+   */
+  function setLine(index: number, lineId: number | null) {
+    onChange(
+      shipments.map((s, i) =>
+        i === index ? acceptGuess({ ...s, lineId }) : s,
+      ),
+    );
+  }
+
+  /** Accepting the suggested line as-is: same row, guess settled. */
+  function accept(index: number) {
+    onChange(shipments.map((s, i) => (i === index ? acceptGuess(s) : s)));
+  }
+
   function setCharges(index: number, charges: CourierChargeInput[]) {
     onChange(shipments.map((s, i) => (i === index ? { ...s, charges } : s)));
   }
@@ -106,6 +133,13 @@ export function ShipmentAllocationTable({
         {totals.unmatched > 0 && (
           <Badge variant="outline" className="font-normal text-amber-600 border-amber-300">
             {totals.unmatched} משלוחים ללא שורה
+          </Badge>
+        )}
+        {totals.pendingGuesses > 0 && (
+          <Badge variant="outline" className="font-normal text-amber-700 border-amber-400">
+            {totals.pendingGuesses === 1
+              ? "שיוך משוער אחד ממתין לאישור"
+              : `${totals.pendingGuesses} שיוכים משוערים ממתינים לאישור`}
           </Badge>
         )}
         {totals.vat !== 0 && (
@@ -159,9 +193,18 @@ export function ShipmentAllocationTable({
             {shipments.map((shipment, i) => {
               const line = shipment.lineId === null ? null : byId.get(shipment.lineId) ?? null;
               const open = expanded.has(i);
+              // A placed-but-unaccepted supplier guess. Drives the row tint and the
+              // accept affordance below; `allocationsFromShipments` is what actually
+              // withholds the money.
+              const guess = shipment.lineId !== null && isLowConfidence(shipment.matchedBy);
               return (
               <React.Fragment key={i}>
-                <TableRow className={cn(shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10")}>
+                <TableRow
+                  className={cn(
+                    shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10",
+                    guess && "bg-amber-100/50 dark:bg-amber-950/30",
+                  )}
+                >
                   <TableCell>
                     <Input
                       dir="ltr"
@@ -220,8 +263,35 @@ export function ShipmentAllocationTable({
                     <LinePicker
                       lines={lines}
                       value={shipment.lineId}
-                      onChange={(lineId) => set(i, "lineId", lineId)}
+                      onChange={(lineId) => setLine(i, lineId)}
                     />
+                    {guess && (
+                      <div className="mt-1 flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50/60 p-1.5 dark:border-amber-800 dark:bg-amber-950/20">
+                        <p className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-500">
+                          <TriangleAlert className="mt-px size-3 shrink-0" />
+                          <span>
+                            שיוך משוער — לפי ספק ותאריך בלבד, לא לפי מספר מעקב. העלות{" "}
+                            <strong>לא תירשם</strong> עד אישור.
+                          </span>
+                        </p>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-6 gap-1 border-amber-400 px-2 text-[11px] text-amber-800 dark:text-amber-400"
+                            disabled={disabled}
+                            onClick={() => accept(i)}
+                          >
+                            <Check className="size-3" />
+                            מאשר את השיוך
+                          </Button>
+                          <span className="text-[11px] text-muted-foreground">
+                            או בחר שורה אחרת
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     {line?.shippingCost && (
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         לשורה רשומה כבר עלות משלוח {formatILS(line.shippingCost)} — היא תחושב מחדש

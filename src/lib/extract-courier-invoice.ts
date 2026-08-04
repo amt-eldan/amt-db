@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
+import { normalizeTracking } from "./courier-match";
 import type { CourierChargeInput, CourierShipmentInput } from "./validation";
 
 /**
@@ -78,14 +79,30 @@ function sumMoney(values: number[]): number {
   return values.reduce((acc, v) => acc + Math.round(v * 100), 0) / 100;
 }
 
-/** How a warning names the shipment it is about, when the reviewer has to find it. */
+/**
+ * How a warning names the shipment it is about, when the reviewer has to find it.
+ * The customs declaration and the sender are in the chain because an import-tax
+ * invoice has neither a reference nor much of a description, and "שורה 3" is not
+ * something you can look up in the document.
+ */
 function shipmentLabel(
-  bol: string | null,
-  reference: string | null,
-  description: string | null,
+  fields: {
+    bol: string | null;
+    reference: string | null;
+    customsDeclaration: string | null;
+    shipper: string | null;
+    description: string | null;
+  },
   index: number,
 ): string {
-  return bol ?? reference ?? description ?? `שורה ${index + 1}`;
+  return (
+    fields.bol ??
+    fields.reference ??
+    fields.customsDeclaration ??
+    fields.shipper ??
+    fields.description ??
+    `שורה ${index + 1}`
+  );
 }
 
 function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentInput[] {
@@ -98,16 +115,42 @@ function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentIn
   raw.forEach((item, index) => {
     const obj = asRecord(item);
     const bol = str(obj.trackingNumber) ?? str(obj.bol);
-    const reference = str(obj.reference);
+    const customsDeclaration = str(obj.customsDeclaration);
+    const shipper = str(obj.shipper);
     const charges = normalizeCharges(obj.charges);
     let amount = num(obj.amount);
-    // The description carries the shipment's own date when it has one: it is
-    // context for the reviewer, not a field anything computes with.
-    const date = str(obj.date);
-    const description = [str(obj.description), date].filter(Boolean).join(" · ") || null;
+
+    // The customs declaration is the number the model is most tempted to put in
+    // `reference` when the document has no asmachta of ours (see the prompt). The
+    // prompt tells it not to; this catches it doing so anyway, because a reference
+    // that equals the declaration is worse than no reference at all — it can match
+    // a real order number by coincidence and move money to the wrong line.
+    let reference = str(obj.reference);
+    if (reference && customsDeclaration && normalizeTracking(reference) === normalizeTracking(customsDeclaration)) {
+      warnings.push(
+        `מספר הרשימון ${customsDeclaration} הוחזר גם כאסמכתא — הוא הוסר משדה האסמכתא כדי שלא ישויך לשורה שגויה`,
+      );
+      reference = null;
+    }
+
+    // Kept structured as well as in the description: the supplier key needs a date
+    // it can compare, and a date concatenated into prose is not one.
+    const shipmentDate = isoDate(obj.date, "תאריך משלוח", warnings);
+    const description =
+      [str(obj.description), shipmentDate].filter(Boolean).join(" · ") || null;
 
     // A row with nothing on it is a table artifact, not a charge.
-    if (!bol && !reference && !description && amount === null && charges.length === 0) return;
+    if (
+      !bol &&
+      !reference &&
+      !customsDeclaration &&
+      !shipper &&
+      !description &&
+      amount === null &&
+      charges.length === 0
+    ) {
+      return;
+    }
 
     // The breakdown is what the total is made of, so the two must agree. When the
     // document itemized the charges but no line total was read, the components are
@@ -116,7 +159,10 @@ function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentIn
       .map((c) => (c.amount === null ? null : Number(c.amount)))
       .filter((v): v is number => v !== null);
     const chargeSum = itemized.length === 0 ? null : sumMoney(itemized);
-    const label = shipmentLabel(bol, reference, description, index);
+    const label = shipmentLabel(
+      { bol, reference, customsDeclaration, shipper, description },
+      index,
+    );
     if (amount === null && chargeSum !== null) {
       amount = chargeSum;
       derived.push(label);
@@ -128,10 +174,15 @@ function normalizeShipments(raw: unknown, warnings: string[]): CourierShipmentIn
     shipments.push({
       bol,
       reference,
+      customsDeclaration,
+      shipper,
+      shipmentDate,
       description,
       amount: amount === null ? null : String(amount),
       charges,
       lineId: null,
+      // Extraction never matches; lib/courier-match does, and it sets this.
+      matchedBy: null,
     });
   });
 
@@ -269,12 +320,16 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מחשבוניות של חב
 
 משלוחים (shipments) — זה החלק החשוב:
 - חשבונית בלדר היא בדרך כלל טבלה של משלוחים. החזר שורה אחת לכל משלוח.
-- trackingNumber = מספר המשלוח / שטר המטען / Tracking Number / AWB / Waybill. זה השדה הקריטי — דרכו משויכת עלות המשלוח להזמנה שלנו.
-- reference = מספר האסמכתא שלנו שהבלדר מצטט (Reference, Shipper Reference, "הזמנתכם") — לרוב מספר הזמנת רכש או מספר הזמנה.
+- trackingNumber = מספר המשלוח / שטר המטען / Tracking Number / AWB / Waybill.
+- reference = מספר האסמכתא שלנו בלבד, כפי שהבלדר מצטט אותה (Reference, Shipper Reference, "הזמנתכם"): מספר הזמנת רכש שלנו או מספר הזמנה שלנו.
+- מלכודת קריטית ב-reference: אם בשורה אין אסמכתא שלנו — השאר את reference ריק. אל תמלא אותו במספר אחר רק כדי שלא יישאר ריק. בפרט אסור להחזיר ב-reference מספר רשימון, מספר מסמך או אישור של רשות המכס, מספר שטר מטען, מספר חשבון לקוח אצל הבלדר, או מספר החשבונית עצמה. מספר כזה לעולם לא יתאים לאסמכתא שלנו, וגרוע מכך — אם הוא במקרה זהה למספר הזמנה קיים אצלנו, החיוב ישויך לשורה הלא נכונה. שדה ריק הוא התוצאה הנכונה כאן, לא כישלון.
+- customsDeclaration = מספר רשימון / מספר הצהרת יבוא / Customs Entry / Entry No, אם מופיע. יש לו שדה משלו בדיוק כדי שלא ייכנס ל-reference.
+- shipper = פרטי השולח / שם היצואן / Shipper / Sender / Consignor — שם החברה ששלחה את הסחורה. לא הבלדר, ולא אנחנו. החזר את השם כפי שהוא מודפס, בלי לתקן או לקצר.
 - description = תיאור קצר (יעד, סוג שירות, משקל) — עד שורה אחת.
-- date = תאריך המשלוח בפורמט yyyy-mm-dd, אם מופיע.
+- date = תאריך המשלוח בפורמט yyyy-mm-dd. אם מופיע תאריך יבוא ולא תאריך משלוח — החזר את תאריך היבוא.
 - amount = הסכום הכולל של אותו משלוח בלבד, כפי שהחשבונית מסכמת אותו (שורת "סה"כ" של המשלוח, כולל מע"מ אם היא כוללת אותו). אל תחשב ואל תפצל בעצמך.
-- אל תמציא מספרי מעקב. משלוח בלי מספר מעקב — החזר אותו עם reference ו-description בלבד.
+- אל תמציא מספרי מעקב. משלוח בלי מספר מעקב — החזר את השדות שכן מופיעים (shipper, customsDeclaration, date, description).
+- דוגמה לחשבונית מיסי יבוא של DHL: יש בה שטר מטען, מספר רשימון, פרטי שולח ותאריך יבוא, ואין בה שום אסמכתא שלנו. הפלט הנכון: trackingNumber = שטר המטען, customsDeclaration = הרשימון, shipper = שם השולח, date = תאריך היבוא, ו-reference ריק.
 - שורות שאינן משלוח (סה"כ, מע"מ, הנחה) אינן shipments. חיוב נוסף שחל על כל החשבונית (למשל היטל דלק) אפשר להחזיר כמשלוח בלי מספר מעקב, עם description שמסביר מה זה.
 
 פירוט החיובים של כל משלוח (charges) — חשוב לא פחות:
@@ -303,6 +358,28 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מחשבוניות של חב
 - אם המסמך אינו חשבונית של חברת שילוח — השמט את invoiceNumber והוסף warning שמסביר מה המסמך כן (תעודת משלוח, חשבונית ספק רגילה, הצעת מחיר וכו').
 - warnings: כתוב בעברית כל דבר שדורש עין אנושית (שדה מטושטש, סכום שלא הסתכם, מספר מעקב חלקי וכו').`;
 
+/**
+ * The system prompt and the tool schema are byte-identical on every upload, and
+ * together they are a few thousand tokens that were being re-processed at full
+ * price each time. Marking the last system block caches the pair: the API renders
+ * `tools` -> `system` -> `messages`, so one breakpoint here covers both, and a
+ * cache read is about a tenth of the input price.
+ *
+ * The PDF deliberately stays out of it. It sits in `messages`, after the
+ * breakpoint, so its bytes never enter the cached prefix — which is what makes the
+ * prefix identical across uploads of different documents in the first place.
+ *
+ * Two things to know before tuning this:
+ *  - The cached prefix has to clear the model's minimum or it silently does not
+ *    cache at all (no error, `cache_creation_input_tokens: 0`). For
+ *    claude-sonnet-5 that minimum is 1024 tokens and all three prompts clear it.
+ *    Overriding EXTRACT_MODEL to a model with a higher floor (Opus 4.6 and
+ *    Haiku 4.5 want 4096) turns caching off without saying so.
+ *  - A write costs ~1.25x, a read ~0.1x, and the entry lives 5 minutes. Two
+ *    uploads inside that window pay for the write; one invoice a day pays the
+ *    premium forever and reads nothing. This is a win for a batch of invoices,
+ *    which is how they arrive, and a small loss for a lone one.
+ */
 const SUBMIT_COURIER_INVOICE_TOOL: Anthropic.Tool = {
   name: "submit_courier_invoice",
   description:
@@ -332,10 +409,23 @@ const SUBMIT_COURIER_INVOICE_TOOL: Anthropic.Tool = {
             },
             reference: {
               type: "string",
-              description: "האסמכתא שלנו שהבלדר מצטט (הזמנת רכש או מספר הזמנה).",
+              description:
+                "האסמכתא שלנו בלבד (הזמנת רכש או מספר הזמנה שלנו). השמט אם אין אסמכתא שלנו בשורה — אל תחזיר כאן מספר רשימון, מספר מסמך מכס, שטר מטען או מספר חשבון.",
+            },
+            customsDeclaration: {
+              type: "string",
+              description: "מספר רשימון / הצהרת יבוא / Customs Entry, אם מופיע.",
+            },
+            shipper: {
+              type: "string",
+              description:
+                "שם החברה ששלחה את הסחורה (פרטי השולח / Shipper / Consignor), כפי שמודפס. לא הבלדר.",
             },
             description: { type: "string", description: "יעד / סוג שירות / משקל, עד שורה אחת." },
-            date: { type: "string", description: "תאריך המשלוח בפורמט yyyy-mm-dd." },
+            date: {
+              type: "string",
+              description: "תאריך המשלוח, או תאריך היבוא אם זה מה שמופיע, בפורמט yyyy-mm-dd.",
+            },
             amount: {
               type: "number",
               description: 'סה"כ החיוב עבור המשלוח הזה בלבד, כפי שהחשבונית מסכמת אותו.',
@@ -402,7 +492,9 @@ export async function extractCourierInvoiceFromPdf(
       // it was. Truncation here costs the whole extraction (stop_reason below).
       max_tokens: 16_000,
       thinking: { type: "disabled" },
-      system: SYSTEM_PROMPT,
+      // Reading a table out of a PDF is not a reasoning task; the default is `high`.
+      output_config: { effort: "medium" },
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       tools: [SUBMIT_COURIER_INVOICE_TOOL],
       tool_choice: { type: "tool", name: "submit_courier_invoice" },
       messages: [

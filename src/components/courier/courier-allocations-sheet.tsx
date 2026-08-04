@@ -75,10 +75,17 @@ function AllocationsForm({
       : allocations.map((a) => ({
           bol: a.bol,
           reference: null,
+          customsDeclaration: null,
+          shipper: null,
+          shipmentDate: null,
           description: a.description,
           amount: a.amount,
           charges: [],
           lineId: a.lineId,
+          // An allocation is money already written against this line, which means a
+          // human approved it. Reconstructing it as "manual" keeps that true — it is
+          // not a fresh guess, and it must not start needing re-approval.
+          matchedBy: "manual" as const,
         })),
   );
 

@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptGuess,
   allocationTotals,
   allocationsFromShipments,
   chargeTolerance,
   chargeTotals,
+  isLowConfidence,
   matchShipmentsToLines,
+  normalizeSupplier,
   normalizeTracking,
   shipmentTotal,
   splitAmount,
+  suppliersMatch,
+  SUPPLIER_WINDOW_DAYS,
   type CourierCharge,
   type CourierChargeKind,
   type CourierLineOption,
@@ -20,6 +25,7 @@ function line(over: Partial<CourierLineOption> & { lineId: number }): CourierLin
     customerName: "משרד ראש הממשלה",
     pn: "CH-USB-2",
     poNumber: null,
+    supplier: null,
     bol: null,
     shippingCost: null,
     orderDate: "2026-07-01",
@@ -28,14 +34,25 @@ function line(over: Partial<CourierLineOption> & { lineId: number }): CourierLin
   };
 }
 
+/** The yyyy-mm-dd that is `days` before `iso` — for asserting the window edge. */
+function daysAgo(iso: string, days: number): string {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) - days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 function shipment(over: Partial<CourierShipment> = {}): CourierShipment {
   return {
     bol: null,
     reference: null,
+    customsDeclaration: null,
+    shipper: null,
+    shipmentDate: null,
     description: null,
     amount: null,
     charges: [],
     lineId: null,
+    matchedBy: null,
     ...over,
   };
 }
@@ -345,5 +362,191 @@ describe("shipmentTotal", () => {
   it("allocates a shipment that has only a breakdown", () => {
     const rows = allocationsFromShipments([shipment({ lineId: 3, charges: DHL_CHARGES })]);
     expect(rows).toEqual([{ lineId: 3, amount: "531.78", bol: null, description: null }]);
+  });
+});
+
+describe("normalizeSupplier", () => {
+  it("strips legal forms, punctuation and case so one supplier reads as one name", () => {
+    expect(normalizeSupplier("ATIC (HK)TECHNOLOGY CO,LTD")).toEqual(["ATIC", "HK", "TECHNOLOGY"]);
+    expect(normalizeSupplier("Taoglas Limited")).toEqual(["TAOGLAS"]);
+    expect(normalizeSupplier("  texas   instruments  ")).toEqual(["TEXAS", "INSTRUMENTS"]);
+  });
+
+  it("has nothing to say about an empty name", () => {
+    expect(normalizeSupplier(null)).toEqual([]);
+    expect(normalizeSupplier("  ")).toEqual([]);
+    expect(normalizeSupplier("Ltd.")).toEqual([]); // a legal form alone is not a name
+  });
+});
+
+describe("suppliersMatch", () => {
+  // The three senders printed on the DHL import-tax invoice, against how the same
+  // suppliers are typed into order_lines.
+  it("matches the same supplier written two ways", () => {
+    expect(suppliersMatch("ATIC (HK)TECHNOLOGY CO,LTD", "ATIC Technology")).toBe(true);
+    expect(suppliersMatch("TEXAS INSTRUMENTS SOUTHEAST ASIA PL", "Texas Instruments")).toBe(true);
+    expect(suppliersMatch("TAOGLAS LIMITED IRELAND", "Taoglas")).toBe(true);
+  });
+
+  it("refuses two different suppliers that share a word", () => {
+    expect(suppliersMatch("ATIC (HK)TECHNOLOGY CO,LTD", "AVNET Technology")).toBe(false);
+    expect(suppliersMatch("Texas Instruments", "Texas Electronics")).toBe(false);
+  });
+
+  it("refuses a match carried only by a country or a filler word", () => {
+    // Shared token is ASIA — locates, does not identify.
+    expect(suppliersMatch("ASIA ELECTRONICS LTD", "ASIA")).toBe(false);
+    expect(suppliersMatch("GLOBAL PARTS LTD", "GLOBAL")).toBe(false);
+  });
+
+  it("refuses when one name is only a fragment of a word in the other", () => {
+    // Containment is by whole token: `TAO` is not `TAOGLAS`.
+    expect(suppliersMatch("TAO", "TAOGLAS")).toBe(false);
+  });
+
+  it("refuses a match on a short shared token", () => {
+    expect(suppliersMatch("ABC Systems", "ABC")).toBe(false); // 3 chars is not distinctive
+  });
+
+  it("never matches a missing name", () => {
+    expect(suppliersMatch(null, "Taoglas")).toBe(false);
+    expect(suppliersMatch("Taoglas", null)).toBe(false);
+  });
+});
+
+describe("matchShipmentsToLines — the supplier key", () => {
+  const dhl = { shipper: "TAOGLAS LIMITED IRELAND", shipmentDate: "2026-08-01", amount: "531.78" };
+  /** One open, uncosted Taoglas line ordered inside the window. */
+  const taoglas = line({ lineId: 7, supplier: "Taoglas", orderDate: "2026-07-01" });
+
+  it("places a shipment that has no asmachta at all, by supplier and date", () => {
+    const [matched] = matchShipmentsToLines([shipment(dhl)], [taoglas]);
+    expect(matched.lineId).toBe(7);
+    expect(matched.matchedBy).toBe("supplier");
+  });
+
+  it("marks the guess low-confidence so the rest of the system can quarantine it", () => {
+    const [matched] = matchShipmentsToLines([shipment(dhl)], [taoglas]);
+    expect(isLowConfidence(matched.matchedBy)).toBe(true);
+  });
+
+  it("refuses to choose between two lines that both fit", () => {
+    const [matched] = matchShipmentsToLines(
+      [shipment(dhl)],
+      [taoglas, line({ lineId: 8, supplier: "Taoglas", orderDate: "2026-07-02" })],
+    );
+    expect(matched.lineId).toBeNull();
+    expect(matched.matchedBy).toBeNull();
+  });
+
+  it("ignores a closed line — that money is settled", () => {
+    const [matched] = matchShipmentsToLines([shipment(dhl)], [{ ...taoglas, isOpen: false }]);
+    expect(matched.lineId).toBeNull();
+  });
+
+  it("ignores a line that already carries a shipping cost", () => {
+    const [matched] = matchShipmentsToLines([shipment(dhl)], [{ ...taoglas, shippingCost: "120" }]);
+    expect(matched.lineId).toBeNull();
+  });
+
+  it("ignores an order too old to be this shipment", () => {
+    const old = { ...taoglas, orderDate: "2025-01-01" };
+    expect(matchShipmentsToLines([shipment(dhl)], [old])[0].lineId).toBeNull();
+  });
+
+  it("ignores an order placed after the shipment — that is not its shipment", () => {
+    const later = { ...taoglas, orderDate: "2026-09-01" };
+    expect(matchShipmentsToLines([shipment(dhl)], [later])[0].lineId).toBeNull();
+  });
+
+  it("matches at the far edge of the window and not one day past it", () => {
+    const edge = { ...taoglas, orderDate: "2026-08-01" };
+    const inWindow = daysAgo("2026-08-01", SUPPLIER_WINDOW_DAYS);
+    const outWindow = daysAgo("2026-08-01", SUPPLIER_WINDOW_DAYS + 1);
+    expect(
+      matchShipmentsToLines([shipment(dhl)], [{ ...edge, orderDate: inWindow }])[0].lineId,
+    ).toBe(7);
+    expect(
+      matchShipmentsToLines([shipment(dhl)], [{ ...edge, orderDate: outWindow }])[0].lineId,
+    ).toBeNull();
+  });
+
+  it("needs both a sender and a date before it will guess at all", () => {
+    expect(matchShipmentsToLines([shipment({ ...dhl, shipper: null })], [taoglas])[0].lineId)
+      .toBeNull();
+    expect(matchShipmentsToLines([shipment({ ...dhl, shipmentDate: null })], [taoglas])[0].lineId)
+      .toBeNull();
+  });
+
+  it("never uses the customs declaration as a key, even against a matching order number", () => {
+    // The trap: a declaration number that happens to equal a real order number.
+    const collide = line({ lineId: 9, orderNumber: "465953602", supplier: "Someone Else" });
+    const [matched] = matchShipmentsToLines(
+      [shipment({ customsDeclaration: "465953602", amount: "531.78" })],
+      [collide],
+    );
+    expect(matched.lineId).toBeNull();
+  });
+
+  it("prefers a tracking number over a supplier guess", () => {
+    const byBol = line({ lineId: 3, bol: "1Z999AA9", supplier: "Taoglas", orderDate: "2026-07-01" });
+    const [matched] = matchShipmentsToLines([shipment({ ...dhl, bol: "1Z999AA9" })], [byBol]);
+    expect(matched.matchedBy).toBe("bol");
+  });
+
+  it("does not split a guess across several lines the way a tracking number splits", () => {
+    // Two lines, same supplier, both in window: ambiguous, so nothing is placed —
+    // rather than one cost divided between them on a coincidence.
+    const rows = matchShipmentsToLines(
+      [shipment(dhl)],
+      [taoglas, line({ lineId: 8, supplier: "Taoglas Ltd", orderDate: "2026-07-10" })],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lineId).toBeNull();
+  });
+
+  it("keeps a guess a guess when the matcher runs again over the staged row", () => {
+    const staged = shipment({ ...dhl, lineId: 7, matchedBy: "supplier" });
+    const [again] = matchShipmentsToLines([staged], [taoglas]);
+    expect(again.matchedBy).toBe("supplier");
+  });
+
+  it("still treats a human's own choice as a human's choice on re-run", () => {
+    const chosen = shipment({ ...dhl, lineId: 7, matchedBy: "manual" });
+    expect(matchShipmentsToLines([chosen], [taoglas])[0].matchedBy).toBe("manual");
+  });
+});
+
+describe("a guess cannot become money until it is accepted", () => {
+  const guess = shipment({ lineId: 7, amount: "531.78", matchedBy: "supplier" });
+
+  it("is left out of the allocations", () => {
+    expect(allocationsFromShipments([guess])).toEqual([]);
+  });
+
+  it("allocates once accepted", () => {
+    expect(allocationsFromShipments([acceptGuess(guess)])).toEqual([
+      { lineId: 7, amount: "531.78", bol: null, description: null },
+    ]);
+  });
+
+  it("leaves a key match alone — acceptGuess only touches guesses", () => {
+    const byBol = shipment({ lineId: 7, amount: "531.78", matchedBy: "bol" });
+    expect(acceptGuess(byBol)).toBe(byBol);
+  });
+
+  it("is counted and excluded from the total, so the card can explain the gap", () => {
+    const totals = allocationTotals([guess], "531.78");
+    expect(totals.pendingGuesses).toBe(1);
+    expect(totals.allocated).toBe(0);
+    expect(totals.lines).toBe(0);
+    expect(totals.difference).toBe(-531.78);
+  });
+
+  it("stops being pending, and starts counting, once accepted", () => {
+    const totals = allocationTotals([acceptGuess(guess)], "531.78");
+    expect(totals.pendingGuesses).toBe(0);
+    expect(totals.allocated).toBe(531.78);
+    expect(totals.difference).toBe(0);
   });
 });

@@ -100,10 +100,14 @@ describe("normalizeExtractedCourierInvoice", () => {
       {
         bol: null,
         reference: null,
+        customsDeclaration: null,
+        shipper: null,
+        shipmentDate: null,
         description: "היטל דלק",
         amount: "300",
         charges: [],
         lineId: null,
+        matchedBy: null,
       },
     ]);
   });
@@ -384,5 +388,121 @@ describe("normalizeExtractedCourierInvoice — charge breakdown", () => {
     });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.shipments[0].charges).toEqual([]);
+  });
+});
+
+describe("the DHL import-tax invoice: a document with no asmachta of ours", () => {
+  /**
+   * What that invoice actually gives us: an AWB, a customs declaration number, a
+   * sender, an import date — and nothing that identifies our order. The fields
+   * below exist so the declaration stops being crammed into `reference`, and so
+   * the sender and date can carry a supplier match instead.
+   */
+  const dhlRow = {
+    trackingNumber: "6921530475",
+    customsDeclaration: "465953602",
+    shipper: "TAOGLAS LIMITED IRELAND",
+    date: "2026-07-14",
+    amount: 531.78,
+  };
+
+  it("keeps the customs declaration in its own field, out of the asmachta", () => {
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [dhlRow] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0]).toMatchObject({
+      bol: "6921530475",
+      customsDeclaration: "465953602",
+      reference: null,
+    });
+  });
+
+  it("keeps the sender and the date as fields the matcher can use", () => {
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [dhlRow] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0].shipper).toBe("TAOGLAS LIMITED IRELAND");
+    expect(invoice.shipments[0].shipmentDate).toBe("2026-07-14");
+  });
+
+  it("still shows the date in the description, where it always was", () => {
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [{ ...dhlRow, description: "מיסי יבוא" }] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0].description).toBe("מיסי יבוא · 2026-07-14");
+  });
+
+  it("strips the declaration back out of the asmachta if the model puts it there anyway", () => {
+    // The prompt forbids this; the normalizer is the net under the prompt, because a
+    // declaration sitting in `reference` can match a real order number by coincidence.
+    const { invoice, warnings } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [{ ...dhlRow, reference: "465953602" }] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0].reference).toBeNull();
+    expect(invoice.shipments[0].customsDeclaration).toBe("465953602");
+    expect(hasWarning(warnings, "הרשימון")).toBe(true);
+  });
+
+  it("ignores punctuation when deciding the asmachta is really the declaration", () => {
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [{ ...dhlRow, reference: "465-953-602" }] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0].reference).toBeNull();
+  });
+
+  it("keeps a real asmachta that merely sits beside a declaration", () => {
+    const { invoice, warnings } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [{ ...dhlRow, reference: "PO-8871" }] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments[0].reference).toBe("PO-8871");
+    expect(hasWarning(warnings, "הרשימון")).toBe(false);
+  });
+
+  it("keeps a row whose only content is a sender and a declaration", () => {
+    // Without the new fields this row read as empty and was dropped as an artifact.
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [{ customsDeclaration: "465953602", shipper: "TAOGLAS" }] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    expect(invoice.shipments).toHaveLength(1);
+  });
+
+  it("survives the draft schema, so it reaches the staged row", () => {
+    const { invoice } = normalizeExtractedCourierInvoice(
+      raw({ shipments: [dhlRow] }),
+      "DHL9663605.pdf",
+      today,
+    );
+    const parsed = courierInvoiceDraft.safeParse({ ...invoice, fileName: "DHL9663605.pdf" });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.shipments[0].customsDeclaration).toBe("465953602");
+    expect(parsed.success && parsed.data.shipments[0].shipper).toBe("TAOGLAS LIMITED IRELAND");
+    expect(parsed.success && parsed.data.shipments[0].shipmentDate).toBe("2026-07-14");
+  });
+
+  it("reads a payload staged before these fields existed", () => {
+    // Old rows have neither the new fields nor matchedBy; they must parse as null,
+    // and null is not low-confidence — those were all key matches.
+    const parsed = courierInvoiceDraft.safeParse({
+      courier: "DHL",
+      invoiceNumber: "IL-1",
+      shipments: [{ bol: "1Z999AA1", amount: "180", lineId: 4 }],
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.shipments[0].matchedBy).toBeNull();
+    expect(parsed.success && parsed.data.shipments[0].customsDeclaration).toBeNull();
   });
 });

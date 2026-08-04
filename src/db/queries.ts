@@ -489,6 +489,9 @@ export async function getCourierLineOptions(): Promise<CourierLineOption[]> {
       customerName: customers.name,
       pn: orderLines.pn,
       poNumber: orderLines.poNumber,
+      // The supplier key's other half. Selected here rather than joined later
+      // because matching runs on this exact row set — see matchShipmentsToLines.
+      supplier: orderLines.supplier,
       bol: orderLines.bol,
       shippingCost: orderLines.shippingCost,
       orderDate: orders.orderDate,
