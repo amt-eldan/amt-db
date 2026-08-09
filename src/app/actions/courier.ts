@@ -11,7 +11,7 @@ import {
   stagedCourierInvoices,
 } from "@/db/schema";
 import { audit } from "@/lib/audit";
-import { allocationsFromShipments } from "@/lib/courier-match";
+import { allocationsFromShipments, isLowConfidence } from "@/lib/courier-match";
 import { isUniqueViolation } from "@/lib/pg-error";
 import { requireSession } from "@/lib/require-session";
 import {
@@ -157,6 +157,26 @@ export async function approveCourierInvoice(
     return { ok: false, error: parsed.error.issues[0]?.message ?? "נתוני החשבונית לא תקינים" };
   }
   const draft = parsed.data;
+
+  // A supplier guess has to be looked at before it becomes money. The table already
+  // shows it and offers an accept button, but the gate lives here as well: the UI is
+  // a convenience and this is the door to the ledger. Without it, approving a
+  // pending invoice without scrolling would silently drop the guessed shipments'
+  // cost (allocationsFromShipments skips them) and the invoice would look reconciled
+  // while a line went uncharged.
+  const pendingGuesses = draft.shipments.filter(
+    (s) => s.lineId !== null && isLowConfidence(s.matchedBy),
+  ).length;
+  if (pendingGuesses > 0) {
+    return {
+      ok: false,
+      error:
+        pendingGuesses === 1
+          ? "שיוך משוער אחד עוד לא אושר. יש לאשר אותו בטבלה, או לבחור שורה אחרת, לפני אישור החשבונית."
+          : `${pendingGuesses} שיוכים משוערים עוד לא אושרו. יש לאשר אותם בטבלה, או לבחור שורות אחרות, לפני אישור החשבונית.`,
+    };
+  }
+
   const allocations = allocationsFromShipments(draft.shipments);
   if (allocations.length > 0 && draft.currency !== "ILS") {
     return foreignCurrencyError(draft.currency);
@@ -195,6 +215,11 @@ export async function approveCourierInvoice(
           amount: draft.amount,
           currency: draft.currency,
           notes: draft.notes,
+          // Keep the document's own itemization, not just where the money landed:
+          // the allocations say a line was charged 531.78, these say it was customs
+          // fees + clearance + VAT. The staged row (and its copy of this) is deleted
+          // a few statements below, so this is the last chance to keep it.
+          shipments: draft.shipments,
           fileName: staged.fileName ?? draft.fileName,
           source: staged.bytes ? "extracted" : "manual",
         })
@@ -357,6 +382,13 @@ export async function updateCourierAllocations(input: unknown): Promise<ActionRe
           .insert(courierInvoiceAllocations)
           .values(allocations.map((a) => ({ ...a, invoiceId })));
       }
+      // The reviewed list is the document's record and it was just re-edited, so it
+      // is rewritten alongside the allocations rather than left describing the
+      // previous split.
+      await tx
+        .update(courierInvoices)
+        .set({ shipments, updatedAt: new Date() })
+        .where(eq(courierInvoices.id, invoiceId));
       return applyShippingCosts(tx, [
         ...previous.map((p) => p.lineId),
         ...allocations.map((a) => a.lineId),

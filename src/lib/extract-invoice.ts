@@ -121,6 +121,28 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מחשבוניות של ספ
 - אם המסמך אינו חשבונית ספק — השמט את invoiceNumber והוסף warning שמסביר מה המסמך כן (הצעת מחיר, תעודת משלוח, הזמנת רכש וכו').
 - warnings: כתוב בעברית כל דבר שדורש עין אנושית (שדה מטושטש, נתון שלא היית בטוח בו, אי-התאמה בין סכומים וכו').`;
 
+/**
+ * The system prompt and the tool schema are byte-identical on every upload, and
+ * together they are a few thousand tokens that were being re-processed at full
+ * price each time. Marking the last system block caches the pair: the API renders
+ * `tools` -> `system` -> `messages`, so one breakpoint here covers both, and a
+ * cache read is about a tenth of the input price.
+ *
+ * The PDF deliberately stays out of it. It sits in `messages`, after the
+ * breakpoint, so its bytes never enter the cached prefix — which is what makes the
+ * prefix identical across uploads of different documents in the first place.
+ *
+ * Two things to know before tuning this:
+ *  - The cached prefix has to clear the model's minimum or it silently does not
+ *    cache at all (no error, `cache_creation_input_tokens: 0`). For
+ *    claude-sonnet-5 that minimum is 1024 tokens and all three prompts clear it.
+ *    Overriding EXTRACT_MODEL to a model with a higher floor (Opus 4.6 and
+ *    Haiku 4.5 want 4096) turns caching off without saying so.
+ *  - A write costs ~1.25x, a read ~0.1x, and the entry lives 5 minutes. Two
+ *    uploads inside that window pay for the write; one invoice a day pays the
+ *    premium forever and reads nothing. This is a win for a batch of invoices,
+ *    which is how they arrive, and a small loss for a lone one.
+ */
 const SUBMIT_INVOICE_TOOL: Anthropic.Tool = {
   name: "submit_invoice",
   description:
@@ -181,7 +203,9 @@ export async function extractInvoiceFromPdf(
       model: process.env.EXTRACT_MODEL ?? "claude-sonnet-5",
       max_tokens: 4000,
       thinking: { type: "disabled" },
-      system: SYSTEM_PROMPT,
+      // Reading a table out of a PDF is not a reasoning task; the default is `high`.
+      output_config: { effort: "medium" },
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       tools: [SUBMIT_INVOICE_TOOL],
       tool_choice: { type: "tool", name: "submit_invoice" },
       messages: [

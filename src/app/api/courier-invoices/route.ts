@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { stagedCourierInvoices } from "@/db/schema";
 import { getCourierLineOptions } from "@/db/queries";
 import { audit } from "@/lib/audit";
-import { matchShipmentsToLines } from "@/lib/courier-match";
+import { isLowConfidence, matchShipmentsToLines } from "@/lib/courier-match";
 import { extractCourierInvoiceFromPdf } from "@/lib/extract-courier-invoice";
 import { requireSession } from "@/lib/require-session";
 import { courierInvoiceDraft } from "@/lib/validation";
@@ -81,16 +81,47 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // A guess is not a match, and it must not be reported as one. Its own warning,
+  // in its own words, so nobody reads "5 שויכו" and assumes five tracking numbers.
+  const guessed = matched.filter((s) => isLowConfidence(s.matchedBy)).length;
+  if (guessed > 0) {
+    warnings.push(
+      guessed === 1
+        ? "משלוח אחד שויך לפי ספק ותאריך בלבד — שיוך משוער שדורש אישור לפני שהעלות תירשם"
+        : `${guessed} משלוחים שויכו לפי ספק ותאריך בלבד — שיוכים משוערים שדורשים אישור לפני שהעלות תירשם`,
+    );
+  }
+
   const parsed = courierInvoiceDraft.safeParse({
     ...invoice,
     fileName: file.name,
-    shipments: matched.map(({ bol, reference, description, amount, lineId }) => ({
-      bol,
-      reference,
-      description,
-      amount,
-      lineId,
-    })),
+    shipments: matched.map(
+      ({
+        bol,
+        reference,
+        customsDeclaration,
+        shipper,
+        shipmentDate,
+        description,
+        amount,
+        charges,
+        lineId,
+        matchedBy,
+      }) => ({
+        bol,
+        reference,
+        customsDeclaration,
+        shipper,
+        shipmentDate,
+        description,
+        amount,
+        charges,
+        lineId,
+        // Kept, not dropped: without it the staged row cannot tell a tracking-number
+        // match from a guess, and the reviewer would be shown both the same way.
+        matchedBy,
+      }),
+    ),
     warnings,
   });
   if (!parsed.success) {
@@ -124,7 +155,10 @@ export async function POST(request: NextRequest) {
     courier: parsed.data.courier,
     invoiceNumber: parsed.data.invoiceNumber,
     shipments: parsed.data.shipments.length,
-    matchedLines: parsed.data.shipments.filter((s) => s.lineId !== null).length,
+    matchedLines: parsed.data.shipments.filter(
+      (s) => s.lineId !== null && !isLowConfidence(s.matchedBy),
+    ).length,
+    guessedLines: guessed,
     warnings,
   });
   revalidatePath("/courier");
@@ -138,7 +172,10 @@ export async function POST(request: NextRequest) {
       amount: parsed.data.amount,
       currency: parsed.data.currency,
       shipments: parsed.data.shipments.length,
-      matched: parsed.data.shipments.filter((s) => s.lineId !== null).length,
+      matched: parsed.data.shipments.filter(
+        (s) => s.lineId !== null && !isLowConfidence(s.matchedBy),
+      ).length,
+      guessed,
       warnings,
     },
     { status: 201 },

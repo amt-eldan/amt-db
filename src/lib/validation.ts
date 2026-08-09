@@ -124,15 +124,49 @@ export const supplierInvoiceUpdate = supplierInvoiceInput.extend({
 export type SupplierInvoiceInput = z.infer<typeof supplierInvoiceInput>;
 
 /**
- * One charge on a courier invoice: a shipment, its tracking number, and the line
- * it belongs to once someone (the matcher or the reviewer) has said which.
+ * One component of what a shipment costs, exactly as the invoice itemizes it:
+ * `אגרת מחשב למכס 21.00`, `שירות שחרור ממכס 71.00`, `מע"מ 12.78`. Couriers print
+ * this breakdown and we used to throw it away, keeping only the total — so a
+ * shipping cost of 531.78 arrived with nothing to explain it.
+ *
+ * Informational: the money that reaches an order line is still the shipment's
+ * `amount`. These rows are what makes that amount readable.
+ */
+export const courierChargeInput = z.object({
+  label: z.string().trim().min(1, "תיאור החיוב חובה").max(200),
+  amount: optionalNumeric,
+  kind: z
+    .enum(["service", "tax", "fee", "vat", "discount", "other"])
+    .nullish()
+    .transform((k) => k ?? "other"),
+});
+
+/**
+ * One charge on a courier invoice: a shipment, its tracking number, the line it
+ * belongs to once someone (the matcher or the reviewer) has said which, and the
+ * itemized charges the invoice says its total is made of.
  */
 export const courierShipmentInput = z.object({
   bol: optionalText,
   reference: optionalText, // our PO / order number as the courier quotes it
+  // Customs' id for the import, not an asmachta of ours. It has a field of its own
+  // so it stops being crammed into `reference`, where it never matched anything and
+  // could collide with a real order number and place the cost on the wrong line.
+  customsDeclaration: optionalText,
+  shipper: optionalText, // "פרטי השולח" — the supplier key's input
+  shipmentDate: optionalIsoDate,
   description: optionalText,
   amount: optionalNumeric,
+  charges: z.array(courierChargeInput).nullish().transform((c) => c ?? []),
   lineId: optionalId,
+  // Which key placed this shipment. Persisted because "supplier" means "guessed",
+  // and that has to still be visible when the row is reviewed tomorrow. Nullish:
+  // rows staged before this field existed read back as null, which is "unknown"
+  // and — correctly — not low-confidence, since those were all key matches.
+  matchedBy: z
+    .enum(["bol", "po", "order", "supplier", "manual"])
+    .nullish()
+    .transform((m) => m ?? null),
 });
 
 /**
@@ -172,6 +206,7 @@ export const courierAllocationsUpdate = z.object({
   shipments: z.array(courierShipmentInput).default([]),
 });
 
+export type CourierChargeInput = z.infer<typeof courierChargeInput>;
 export type CourierShipmentInput = z.infer<typeof courierShipmentInput>;
 export type CourierInvoiceDraft = z.infer<typeof courierInvoiceDraft>;
 
@@ -203,28 +238,51 @@ export const stagedPayload = z.object({
 
 /**
  * One bill-of-lading match accepted by POST /api/bol/matches (from the external
- * tracking agent). `lineId` comes from the worklist the agent was handed, so a
- * match is bound to exactly one line rather than re-matched here.
+ * tracking agent).
+ *
+ * Two ways to say which line the number belongs to:
+ *  - `lineId` from the worklist the agent was handed — bound to one line, nothing
+ *    to re-match;
+ *  - the keys the email itself quoted (`pn` / `poNumber` / `orderNumber`), for a
+ *    tracking number that arrived without a worklist behind it. The server then
+ *    finds the line (resolveBolLine) and refuses to guess when several fit.
+ *
+ * One of the two is required — a bill of lading with nothing to attach it to is
+ * not a match.
  */
-export const bolMatchInput = z.object({
-  lineId: z.number().int().positive(),
-  bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
-  carrier: optionalText,
-  statusText: optionalText,
-  // Carrier's estimated arrival, when the email states one.
-  etaDate: optionalIsoDate,
-  sourceEmailId: optionalText,
-  sourceQuote: optionalText,
-  confidence: z
-    .union([z.string(), z.number()])
-    .nullish()
-    .transform((v) => {
-      if (v === null || v === undefined || v === "") return null;
-      const n = typeof v === "string" ? parseFloat(v) : v;
-      if (!Number.isFinite(n)) return null;
-      return String(Math.min(1, Math.max(0, n)));
-    }),
-});
+export const bolMatchInput = z
+  .object({
+    lineId: z
+      .number()
+      .int()
+      .positive()
+      .nullish()
+      .transform((v) => v ?? null),
+    bol: z.string().trim().min(1, "מספר שטר מטען חובה").max(200),
+    // Search keys as they appear in the email; ignored when lineId is given.
+    pn: optionalText,
+    poNumber: optionalText,
+    orderNumber: optionalText,
+    supplier: optionalText,
+    carrier: optionalText,
+    statusText: optionalText,
+    // Carrier's estimated arrival, when the email states one.
+    etaDate: optionalIsoDate,
+    sourceEmailId: optionalText,
+    sourceQuote: optionalText,
+    confidence: z
+      .union([z.string(), z.number()])
+      .nullish()
+      .transform((v) => {
+        if (v === null || v === undefined || v === "") return null;
+        const n = typeof v === "string" ? parseFloat(v) : v;
+        if (!Number.isFinite(n)) return null;
+        return String(Math.min(1, Math.max(0, n)));
+      }),
+  })
+  .refine((m) => m.lineId !== null || Boolean(m.pn ?? m.poNumber ?? m.orderNumber), {
+    message: "נדרש lineId או מפתח חיפוש (pn / poNumber / orderNumber)",
+  });
 
 export type StagedPayload = z.infer<typeof stagedPayload>;
 export type OrderInput = z.infer<typeof orderInput>;

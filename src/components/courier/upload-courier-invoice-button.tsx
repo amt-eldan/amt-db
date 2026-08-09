@@ -56,6 +56,7 @@ export function UploadCourierInvoiceButton() {
       invoiceNumber?: string;
       shipments?: number;
       matched?: number;
+      guessed?: number;
       warnings?: string[];
     } | null = null;
     try {
@@ -77,8 +78,12 @@ export function UploadCourierInvoiceButton() {
 
     const shipments = data?.shipments ?? 0;
     const matched = data?.matched ?? 0;
+    const guessed = data?.guessed ?? 0;
+    // Guesses are counted apart from matches on purpose: "5 שויכו" reads as five
+    // certainties, and a supplier guess is not one.
+    const guessNote = guessed > 0 ? `, ${guessed} שויכו בהשערה לאישור` : "";
     toast.success(
-      `${data?.courier ?? file.name} · ${data?.invoiceNumber ?? ""} — ${shipments} משלוחים, ${matched} שויכו אוטומטית. ממתין לאישור.`,
+      `${data?.courier ?? file.name} · ${data?.invoiceNumber ?? ""} — ${shipments} משלוחים, ${matched} שויכו אוטומטית${guessNote}. ממתין לאישור.`,
     );
     for (const warning of data?.warnings ?? []) toast.warning(warning);
     router.refresh();

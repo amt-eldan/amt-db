@@ -77,9 +77,10 @@ export const TOOLS: McpTool[] = [
     title: "כתיבת שטרי מטען שנמצאו",
     description:
       "Writes bills of lading found in the mailbox onto their lines. Send one object or an array under `matches`; " +
-      "`lineId` must be one received from bol_worklist. Include `sourceEmailId` and `sourceQuote` — every write is audited with them, " +
+      "`lineId` should be one received from bol_worklist; when the email belongs to no line on the worklist, leave it out and send the keys the email quotes " +
+      "(`poNumber` / `pn` / `orderNumber`) instead and the server resolves the line itself. Include `sourceEmailId` and `sourceQuote` — every write is audited with them, " +
       "which is what makes an automatic write reviewable afterwards. " +
-      "The write is guarded and reports what it refused: an existing bill of lading is never overwritten (a different value comes back as needing manual review), " +
+      "The write is guarded and reports what it refused: keys matching more than one open line are reported rather than guessed, an existing bill of lading is never overwritten (a different value comes back as needing manual review), " +
       "closed lines are skipped, and a match with confidence below 0.5 is skipped rather than guessed. A match without `confidence` is taken as asserted by the agent. " +
       "Returns { ok, written, skipped, results } — report the skips in the daily summary so a human can finish them.",
     inputSchema: {

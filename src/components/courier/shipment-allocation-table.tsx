@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, Trash2, TriangleAlert } from "lucide-react";
+import React, { useState } from "react";
+import { Check, ChevronDown, ChevronUp, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,18 +13,30 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { allocationTotals, type CourierLineOption } from "@/lib/courier-match";
+import {
+  acceptGuess,
+  allocationTotals,
+  isLowConfidence,
+  type CourierLineOption,
+} from "@/lib/courier-match";
 import { formatILS } from "@/lib/format";
-import type { CourierShipmentInput } from "@/lib/validation";
+import type { CourierChargeInput, CourierShipmentInput } from "@/lib/validation";
 import { cn } from "@/lib/utils";
 import { LinePicker } from "./line-picker";
+import { ChargeSummary, ShipmentChargesEditor } from "./shipment-charges-editor";
 
 const emptyShipment: CourierShipmentInput = {
   bol: null,
   reference: null,
+  customsDeclaration: null,
+  shipper: null,
+  shipmentDate: null,
   description: null,
   amount: null,
+  charges: [],
   lineId: null,
+  // A row the reviewer added by hand is their own decision from the first keystroke.
+  matchedBy: "manual",
 };
 
 /**
@@ -52,6 +65,11 @@ export function ShipmentAllocationTable({
 }) {
   const totals = allocationTotals(shipments, invoiceAmount);
   const byId = new Map(lines.map((l) => [l.lineId, l]));
+  // Breakdowns start open where there is one to read: it is the answer to "what is
+  // this 531.78?", and a reviewer who has to go looking for it will not.
+  const [expanded, setExpanded] = useState<Set<number>>(
+    () => new Set(shipments.flatMap((s, i) => (s.charges.length > 0 ? [i] : []))),
+  );
 
   function set(index: number, key: keyof CourierShipmentInput, value: string | number | null) {
     onChange(
@@ -59,6 +77,48 @@ export function ShipmentAllocationTable({
         i === index ? { ...s, [key]: value === "" ? null : value } : s,
       ),
     );
+  }
+
+  /**
+   * Picking a line is the reviewer taking ownership of it, so it also settles any
+   * guess on that row — whether they accepted the suggestion or replaced it.
+   */
+  function setLine(index: number, lineId: number | null) {
+    onChange(
+      shipments.map((s, i) =>
+        i === index ? acceptGuess({ ...s, lineId }) : s,
+      ),
+    );
+  }
+
+  /** Accepting the suggested line as-is: same row, guess settled. */
+  function accept(index: number) {
+    onChange(shipments.map((s, i) => (i === index ? acceptGuess(s) : s)));
+  }
+
+  function setCharges(index: number, charges: CourierChargeInput[]) {
+    onChange(shipments.map((s, i) => (i === index ? { ...s, charges } : s)));
+  }
+
+  function toggle(index: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(index)) next.add(index);
+      return next;
+    });
+  }
+
+  /** Rows are keyed by position, so removing one shifts every state above it. */
+  function remove(index: number) {
+    setExpanded((prev) => {
+      const next = new Set<number>();
+      for (const i of prev) {
+        if (i < index) next.add(i);
+        else if (i > index) next.add(i - 1);
+      }
+      return next;
+    });
+    onChange(shipments.filter((_, i) => i !== index));
   }
 
   return (
@@ -73,6 +133,25 @@ export function ShipmentAllocationTable({
         {totals.unmatched > 0 && (
           <Badge variant="outline" className="font-normal text-amber-600 border-amber-300">
             {totals.unmatched} משלוחים ללא שורה
+          </Badge>
+        )}
+        {totals.pendingGuesses > 0 && (
+          <Badge variant="outline" className="font-normal text-amber-700 border-amber-400">
+            {totals.pendingGuesses === 1
+              ? "שיוך משוער אחד ממתין לאישור"
+              : `${totals.pendingGuesses} שיוכים משוערים ממתינים לאישור`}
+          </Badge>
+        )}
+        {totals.vat !== 0 && (
+          <Badge variant="secondary" className="font-normal">
+            מע&quot;מ בפירוט: <bdi dir="ltr" className="font-medium">{formatILS(totals.vat)}</bdi>
+          </Badge>
+        )}
+        {totals.unreconciled > 0 && (
+          <Badge variant="outline" className="font-normal text-amber-600 border-amber-300">
+            {totals.unreconciled === 1
+              ? "פירוט אחד אינו מסתכם לעלות המשלוח"
+              : `${totals.unreconciled} פירוטים אינם מסתכמים לעלות המשלוח`}
           </Badge>
         )}
         {totals.difference !== null && Math.abs(totals.difference) >= 0.01 && (
@@ -113,8 +192,19 @@ export function ShipmentAllocationTable({
             )}
             {shipments.map((shipment, i) => {
               const line = shipment.lineId === null ? null : byId.get(shipment.lineId) ?? null;
+              const open = expanded.has(i);
+              // A placed-but-unaccepted supplier guess. Drives the row tint and the
+              // accept affordance below; `allocationsFromShipments` is what actually
+              // withholds the money.
+              const guess = shipment.lineId !== null && isLowConfidence(shipment.matchedBy);
               return (
-                <TableRow key={i} className={cn(shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10")}>
+              <React.Fragment key={i}>
+                <TableRow
+                  className={cn(
+                    shipment.lineId === null && "bg-amber-50/40 dark:bg-amber-950/10",
+                    guess && "bg-amber-100/50 dark:bg-amber-950/30",
+                  )}
+                >
                   <TableCell>
                     <Input
                       dir="ltr"
@@ -146,17 +236,62 @@ export function ShipmentAllocationTable({
                       dir="ltr"
                       className="h-8"
                       inputMode="decimal"
+                      placeholder={shipment.charges.length > 0 ? "מסכום הפירוט" : undefined}
                       disabled={disabled}
                       value={shipment.amount ?? ""}
                       onChange={(e) => set(i, "amount", e.target.value)}
                     />
+                    <button
+                      type="button"
+                      className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                      onClick={() => toggle(i)}
+                      aria-expanded={open}
+                    >
+                      {open ? (
+                        <ChevronUp className="size-3 shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 shrink-0" />
+                      )}
+                      {shipment.charges.length === 0 ? (
+                        <span>פירוט</span>
+                      ) : (
+                        <ChargeSummary shipment={shipment} />
+                      )}
+                    </button>
                   </TableCell>
                   <TableCell>
                     <LinePicker
                       lines={lines}
                       value={shipment.lineId}
-                      onChange={(lineId) => set(i, "lineId", lineId)}
+                      onChange={(lineId) => setLine(i, lineId)}
                     />
+                    {guess && (
+                      <div className="mt-1 flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50/60 p-1.5 dark:border-amber-800 dark:bg-amber-950/20">
+                        <p className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-500">
+                          <TriangleAlert className="mt-px size-3 shrink-0" />
+                          <span>
+                            שיוך משוער — לפי ספק ותאריך בלבד, לא לפי מספר מעקב. העלות{" "}
+                            <strong>לא תירשם</strong> עד אישור.
+                          </span>
+                        </p>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-6 gap-1 border-amber-400 px-2 text-[11px] text-amber-800 dark:text-amber-400"
+                            disabled={disabled}
+                            onClick={() => accept(i)}
+                          >
+                            <Check className="size-3" />
+                            מאשר את השיוך
+                          </Button>
+                          <span className="text-[11px] text-muted-foreground">
+                            או בחר שורה אחרת
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     {line?.shippingCost && (
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         לשורה רשומה כבר עלות משלוח {formatILS(line.shippingCost)} — היא תחושב מחדש
@@ -171,12 +306,24 @@ export function ShipmentAllocationTable({
                       size="icon"
                       className="size-7 text-muted-foreground"
                       disabled={disabled}
-                      onClick={() => onChange(shipments.filter((_, idx) => idx !== i))}
+                      onClick={() => remove(i)}
                     >
                       <Trash2 className="size-3.5" />
                     </Button>
                   </TableCell>
                 </TableRow>
+                {open && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={6} className="pt-0">
+                      <ShipmentChargesEditor
+                        shipment={shipment}
+                        disabled={disabled}
+                        onChange={(charges) => setCharges(i, charges)}
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </React.Fragment>
               );
             })}
           </TableBody>
