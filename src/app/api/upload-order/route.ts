@@ -64,12 +64,12 @@ export async function POST(request: NextRequest) {
   }
   const { order, warnings } = extracted;
 
-  const missing: string[] = [];
-  if (!order.customer) missing.push("לקוח");
-  if (!order.orderNumber) missing.push("מספר הזמנה");
-  if (missing.length > 0) {
+  // The order number is the order's identity — without it there is nothing to
+  // stage. A missing customer is not fatal: the row is staged with an empty name
+  // and the review card asks for it (see the warnings this extraction carries).
+  if (!order.orderNumber) {
     return NextResponse.json(
-      { error: `לא זוהו שדות חובה: ${missing.join(", ")}. ניתן להזין את ההזמנה ידנית.`, missing },
+      { error: "לא זוהה מספר הזמנה במסמך. ניתן להזין את ההזמנה ידנית.", missing: ["מספר הזמנה"] },
       { status: 422 },
     );
   }

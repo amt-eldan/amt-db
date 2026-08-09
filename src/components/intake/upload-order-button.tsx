@@ -71,7 +71,7 @@ export function UploadOrderButton() {
     }
 
     toast.success(
-      `${data?.orderNumber ?? file.name} · ${data?.customer ?? ""} — ${data?.lineCount ?? 0} שורות נקלטו לאישור`,
+      `${data?.orderNumber ?? file.name} · ${data?.customer?.trim() || "לקוח לא זוהה"} — ${data?.lineCount ?? 0} שורות נקלטו לאישור`,
     );
     for (const warning of data?.warnings ?? []) toast.warning(warning);
     router.refresh();

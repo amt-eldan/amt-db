@@ -162,7 +162,11 @@ export type CourierInvoiceDraft = z.infer<typeof courierInvoiceDraft>;
 
 /** Payload accepted by POST /api/staged (from the external OCR pipeline). */
 export const stagedPayload = z.object({
-  customer: z.string().trim().min(1),
+  // Empty means "not recognised on the document" — a staged row exists to be
+  // reviewed, so it is better to keep the extracted lines and let the reviewer
+  // type the name than to throw the whole order away. Approval still goes
+  // through `orderInput`, which requires a customer.
+  customer: z.string().trim().max(200).default(""),
   customerNote: optionalText,
   orderNumber: z.string().trim().min(1),
   orderDate: optionalIsoDate, // yyyy-mm-dd

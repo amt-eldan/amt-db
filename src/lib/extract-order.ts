@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { isOwnCompanyName, OWN_COMPANY_LABEL } from "./company";
 import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
 import { isModOrderNumber, stagedPayload } from "./validation";
 
@@ -47,7 +48,19 @@ export function normalizeExtractedOrder(
     for (const w of obj.warnings) if (typeof w === "string" && w.trim()) warnings.push(w.trim());
   }
 
-  const customer = str(obj.customer);
+  // The PO is addressed to us, so our own name sits in its "לכבוד" block. Reading
+  // it as the customer is the one mistake the prompt cannot fully prevent, and a
+  // wrong name here silently creates a bogus customer on approval — so drop it
+  // and let the reviewer type the buyer's name instead.
+  let customer = str(obj.customer);
+  if (customer && isOwnCompanyName(customer)) {
+    warnings.push(
+      `השם שזוהה כלקוח ("${customer}") הוא שם החברה שלנו — אנחנו הנמענים של ההזמנה, לא המזמינים. יש להזין את שם הלקוח המזמין ידנית לפני אישור`,
+    );
+    customer = null;
+  } else if (!customer) {
+    warnings.push("לא זוהה שם לקוח — יש למלא ידנית לפני אישור");
+  }
   const customerNote = str(obj.customerNote);
   const orderNumber = str(obj.orderNumber);
   const isMod = isModOrderNumber(orderNumber ?? "");
@@ -133,7 +146,7 @@ export function normalizeExtractedOrder(
 // Extraction via the Messages API
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purchase Orders) של חברת אלקטרוניקה ישראלית. המסמך המצורף הוא PDF של הזמנה. עליך להחזיר את הנתונים דרך הכלי submit_order בלבד. אל תמציא נתונים — שדה שלא נקרא בבירור, השמט אותו.
+const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purchase Orders) שמתקבלות אצל חברת האלקטרוניקה הישראלית ${OWN_COMPANY_LABEL}. ההזמנה נשלחה אלינו: הלקוח הוא זה שהוציא אותה, ואנחנו הספק שאמור לספק את הסחורה. המסמך המצורף הוא PDF של הזמנה. עליך להחזיר את הנתונים דרך הכלי submit_order בלבד. אל תמציא נתונים — שדה שלא נקרא בבירור, השמט אותו.
 
 הפורמטים שנראו בשטח: הזמנת רכש ממשלתית דיגיטלית (משרד ראש הממשלה), אותה הזמנה כשהיא סרוקה עם חתימות יד, פורטל משרד הביטחון, ו-PO ממערכות ERP של לקוחות (כגון ERPNext). ייתכנו גם פורמטים שלא נראו עדיין — התאם את עצמך.
 
@@ -143,8 +156,10 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 - התעלם מסיומות סורק בשם הקובץ: אם שם הקובץ הוא 0226P02772001.pdf מספר ההזמנה הוא 0226P02772.
 - הזמנת משרד הביטחון: 10 ספרות שמתחילות ב-444.
 
-לקוח (customer):
-- בדרך כלל מבלוק "לכבוד" או שם הקונה.
+לקוח (customer) — כאן הכי קל לטעות, קרא בעיון:
+- הלקוח הוא הגורם שהוציא את ההזמנה, כלומר הקונה: בדרך כלל שם החברה שבראש המסמך (לוגו / נייר מכתבים), או השם שבשדות "מזמין", "קונה", "Bill To", "Buyer", "Ordered By".
+- אנחנו הנמענים של ההזמנה, לא הלקוח. הבלוקים "לכבוד", "ספק", "אל", "Vendor", "Supplier", "To" מכילים את שמנו — ${OWN_COMPANY_LABEL} (מופיע גם כ-AMT, א.מ.ט, אטריום). לעולם אל תחזיר שם כזה בשדה customer. אם השם היחיד שהצלחת לקרוא הוא שלנו — השמט את customer לגמרי והוסף warning.
+- customer הוא שם של ארגון, לא של אדם. שם של איש קשר, רוכש, מאשר או חותם (גם כשהוא מופיע ליד טלפון או אימייל) לא נכנס ל-customer; אם הוא רלוונטי — כתוב אותו ב-customerNote.
 - הזמנת משרד הביטחון (מספר שמתחיל ב-444): הלקוח הוא מספר קבוצת הרכש (למשל 134, 131, 135, 137), שאותו משחזרים מכתובת האימייל של הרוכש. לעולם אל תכתוב "משרד הביטחון" בשדה customer — את התיאור המילולי כתוב ב-customerNote.
 
 שורות (lines):
@@ -176,7 +191,7 @@ const SUBMIT_ORDER_TOOL: Anthropic.Tool = {
       customer: {
         type: "string",
         description:
-          'שם הלקוח או מספר קבוצת הרכש. בהזמנת משהב"ט (444) — מספר קבוצת הרכש, לא "משרד הביטחון".',
+          `שם הארגון שהוציא את ההזמנה (הקונה), או מספר קבוצת הרכש. לעולם לא שמנו שלנו (${OWN_COMPANY_LABEL}) שמופיע בבלוק "לכבוד"/"ספק", ולא שם של איש קשר. בהזמנת משהב"ט (444) — מספר קבוצת הרכש, לא "משרד הביטחון".`,
       },
       customerNote: {
         type: "string",

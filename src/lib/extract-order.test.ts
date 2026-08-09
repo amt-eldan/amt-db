@@ -77,6 +77,39 @@ describe("normalizeExtractedOrder", () => {
     expect(hasWarning(good.warnings, "קבוצת רכש")).toBe(false);
   });
 
+  it("refuses to file our own company as the customer", () => {
+    for (const ours of ["AMT", "א.מ.ט", 'Atrium Micro Technologies Ltd.', 'אטריום מיקרו בע"מ']) {
+      const { order, warnings } = normalizeExtractedOrder(
+        raw({ customer: ours }),
+        "po.pdf",
+        today,
+      );
+      expect(order.customer, ours).toBe("");
+      expect(hasWarning(warnings, "שם החברה שלנו"), ours).toBe(true);
+      expect(hasWarning(warnings, ours), ours).toBe(true);
+    }
+  });
+
+  it("keeps a real customer name, and warns only when none was read", () => {
+    const named = normalizeExtractedOrder(raw({ customer: "אלביט מערכות" }), "po.pdf", today);
+    expect(named.order.customer).toBe("אלביט מערכות");
+    expect(hasWarning(named.warnings, "לא זוהה שם לקוח")).toBe(false);
+
+    const missing = normalizeExtractedOrder(raw({ customer: undefined }), "po.pdf", today);
+    expect(missing.order.customer).toBe("");
+    expect(hasWarning(missing.warnings, "לא זוהה שם לקוח")).toBe(true);
+  });
+
+  it("stages an order whose customer was not recognised, lines and all", () => {
+    const { order } = normalizeExtractedOrder(raw({ customer: "AMT" }), "po.pdf", today);
+    const parsed = stagedPayload.safeParse({ ...order, sourceFile: "po.pdf" });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.customer).toBe("");
+      expect(parsed.data.lines).toHaveLength(1);
+    }
+  });
+
   it("warns on a document-total mismatch over 1 ₪ only", () => {
     // lines sum to 3350.00
     const lines = [{ pn: "A", qty: 100, unitPrice: 33.5 }];
