@@ -108,6 +108,13 @@
 - **ה-JSON Schema של `bol_submit_matches` נוצר מ-`bolMatchInput`** דרך `z.toJSONSchema`, ולא
   נכתב ביד. מה שהסוכן רואה הוא מה שנאכף, ואין דרך שהם ייפרדו.
 
+**המלכודת שנפלנו בה:** קונקטור מחפש שירות התחברות ב-`/.well-known/oauth-*` לפני שהוא מדבר
+MCP. ברירת המחדל של ה-proxy — להפנות כל נתיב לא מוכר ל-`/login` — נתנה לחיפוש הזה 307 ואז
+**200 עם HTML** במקום מטא-דאטה, והקונקטור דיווח "Couldn't register with … sign-in service":
+הוא מצא שירות התחברות שלא קיים. ה-proxy מחזיר עכשיו 404 נקי לנתיבי החיפוש (כולל הווריאנטים
+של RFC 8414/9728 שמצרפים את נתיב המשאב בסוף), עם טסט על `isOAuthDiscoveryPath` — כי כשזה
+שבור זה לא נכשל ברעש, אלא נראה כמו בעיית התחברות אצל הלקוח.
+
 `@modelcontextprotocol/sdk` נשקל ונדחה: ה-transport שלו כתוב מול `IncomingMessage`/
 `ServerResponse` של Node, ו-route handler ב-Next 16 מקבל `Request` ומחזיר `Response`.
 הגישור דורש adapter ו-session store שאין להם שימוש כאן (שני כלים, בלי מנויים, כל קריאה

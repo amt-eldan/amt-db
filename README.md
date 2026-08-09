@@ -286,6 +286,28 @@ curl -s -X POST https://amt-db.vercel.app/api/mcp/$BOL_AGENT_TOKEN \
 טוקן שגוי אמור להחזיר 404, ו-`GET` על אותה כתובת אמור להחזיר 405 (השרת stateless — אין
 stream לפתוח ואין session לשחזר).
 
+### "Couldn't register with the sign-in service" — מה זה אומר
+
+לפני שקונקטור מדבר MCP הוא מחפש שירות התחברות, בכתובות כמו
+`/.well-known/oauth-protected-resource` (וגם עם נתיב המשאב בסוף:
+`/.well-known/oauth-protected-resource/api/mcp/<token>`). לשרת הזה **אין** OAuth — הטוקן
+הוא בכתובת — ולכן התשובה הנכונה לחיפוש היא 404 נקי, וה-proxy מחזיר בדיוק את זה.
+
+זה לא היה מובן מאליו: ברירת המחדל של האפליקציה היא להפנות כל נתיב לא מוכר ל-`/login`, כך
+שהחיפוש היה מקבל 307 ואז **200 עם דף HTML** במקום שבו הוא מצפה למטא-דאטה של OAuth. קונקטור
+שרואה את זה חושב שיש שירות התחברות, מנסה להירשם אליו ונכשל — וזאת בדיוק ההודעה
+"Couldn't register with … sign-in service". אם היא חוזרת, אלה שתי הבדיקות:
+
+```bash
+# 1. הקוד בכלל באוויר? (404 כאן = הענף לא מוזג / לא נפרס)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://amt-db.vercel.app/api/mcp/$BOL_AGENT_TOKEN \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 2. חיפוש ההתחברות מחזיר 404 ולא דף התחברות? (חייב להיות 404)
+curl -s -o /dev/null -w '%{http_code}\n' -L \
+  https://amt-db.vercel.app/.well-known/oauth-protected-resource
+```
+
 ### חיבור ב-claude.ai
 
 1. **Settings → Connectors → Add custom connector**, ולהדביק את הכתובת המלאה עם הטוקן.
