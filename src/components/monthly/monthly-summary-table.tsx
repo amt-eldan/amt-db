@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EditButton } from "@/components/lines/edit-button";
+import { ReceivedDate } from "@/components/lines/received-date";
 import type { LineRow } from "@/db/queries";
 import { formatDate, formatILS, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -37,7 +38,7 @@ export function MonthlySummaryTable({
             <TableRow>
               <TableHead>לקוח</TableHead>
               <TableHead>מס&apos; הזמנה</TableHead>
-              <TableHead>תאריך</TableHead>
+              <TableHead>תאריך קבלת ההזמנה</TableHead>
               <TableHead>P/N</TableHead>
               <TableHead>ספק</TableHead>
               <TableHead>כמות</TableHead>
@@ -53,9 +54,16 @@ export function MonthlySummaryTable({
             {rows.map((row) => (
               <TableRow key={row.lineId}>
                 <TableCell>{row.customerName}</TableCell>
-                <TableCell dir="ltr" className="text-end">{row.orderNumber}</TableCell>
-                <TableCell dir="ltr" className="text-end whitespace-nowrap">
-                  {formatDate(row.orderDate)}
+                <TableCell dir="ltr" className="text-end">
+                  {row.orderNumber}
+                  {row.isOpen && (
+                    <Badge variant="outline" className="ms-1 text-amber-600">
+                      פתוחה
+                    </Badge>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <ReceivedDate line={row} />
                 </TableCell>
                 <TableCell dir="ltr" className="text-end">{row.pn ?? "—"}</TableCell>
                 <TableCell>{row.supplier ?? "—"}</TableCell>
@@ -93,6 +101,11 @@ export function MonthlySummaryTable({
             <CardContent className="px-3 flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium truncate" dir="ltr">{row.pn ?? row.orderNumber}</span>
+                {row.isOpen && (
+                  <Badge variant="outline" className="text-amber-600">
+                    פתוחה
+                  </Badge>
+                )}
                 {row.profit === null ? (
                   <Badge variant="outline">ממתין</Badge>
                 ) : (
@@ -104,6 +117,10 @@ export function MonthlySummaryTable({
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{row.customerName}</span>
                 <span dir="ltr" className="text-start">{row.orderNumber}</span>
+                <span className="col-span-2">
+                  התקבלה: <bdi dir="ltr">{formatDate(row.receivedDate)}</bdi>
+                  {row.orderDate === null && " (לפי קליטה)"}
+                </span>
                 <span>ספק: {row.supplier ?? "—"}</span>
                 <span>מכירה: <bdi dir="ltr">{formatILS(row.sale)}</bdi></span>
                 <span>

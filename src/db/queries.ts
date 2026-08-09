@@ -21,6 +21,8 @@ export interface LineRow {
   orderId: number;
   orderNumber: string;
   orderDate: string | null;
+  /** When the order came in from the customer — see `receivedDateSql`. */
+  receivedDate: string;
   customerId: number;
   customerName: string;
   customerNote: string | null;
@@ -49,6 +51,19 @@ export interface LineRow {
 }
 
 /**
+ * The date an order was received from the customer: what the document says, and
+ * failing that the moment it was entered into the system. The fallback is what
+ * keeps an order without a printed date from falling out of the monthly ledger
+ * entirely — it is always in *some* month, and the screens mark which orders
+ * are dated by their intake rather than by the document.
+ *
+ * Cast in Asia/Jerusalem (Neon runs in UTC) so an order entered late at night
+ * lands in the month it was actually entered, and `::text` so the driver hands
+ * back "yyyy-mm-dd" like every other date in `LineRow`.
+ */
+const receivedDateSql = sql<string>`coalesce(${orders.orderDate}, (${orders.createdAt} at time zone 'Asia/Jerusalem')::date)`;
+
+/**
  * Every column a line editor may write, shared by the open-orders list and the
  * monthly ledger: both hand the same row to the edit sheet, and a field missing
  * from the row would be saved back as empty.
@@ -58,6 +73,7 @@ const lineColumns = {
   orderId: orders.id,
   orderNumber: orders.orderNumber,
   orderDate: orders.orderDate,
+  receivedDate: sql<string>`${receivedDateSql}::text`,
   customerId: customers.id,
   customerName: customers.name,
   customerNote: customers.note,
@@ -104,26 +120,27 @@ export async function getMonthlyLines(year: number, month: number): Promise<Line
     .innerJoin(customers, eq(orders.customerId, customers.id))
     .where(
       and(
-        // The monthly ledger reflects closed lines only (like the legacy
-        // monthly sheets); open lines join it once they are closed.
-        eq(orderLines.isOpen, false),
-        sql`extract(year from ${orders.orderDate}) = ${year}`,
-        sql`extract(month from ${orders.orderDate}) = ${month}`,
+        // Open and closed alike: a month's page is "what came in that month",
+        // so an order received in August shows up in August even though nothing
+        // has been delivered or closed yet. The view separates the two, and
+        // profit stays "ממתין" on any line whose buy price is still unknown.
+        sql`extract(year from ${receivedDateSql}) = ${year}`,
+        sql`extract(month from ${receivedDateSql}) = ${month}`,
       ),
     )
-    .orderBy(asc(customers.name), asc(orders.orderDate), asc(orderLines.id));
+    .orderBy(asc(customers.name), asc(receivedDateSql), asc(orderLines.id));
   return rows;
 }
 
 /** Months that have any order lines, as "yyyy-mm" strings, newest first. */
 export async function getAvailableMonths(): Promise<string[]> {
+  const ym = sql<string>`to_char(${receivedDateSql}, 'YYYY-MM')`;
   const rows = await db
-    .select({ ym: sql<string>`to_char(${orders.orderDate}, 'YYYY-MM')` })
+    .select({ ym })
     .from(orders)
     .innerJoin(orderLines, eq(orderLines.orderId, orders.id))
-    .where(and(sql`${orders.orderDate} is not null`, eq(orderLines.isOpen, false)))
-    .groupBy(sql`to_char(${orders.orderDate}, 'YYYY-MM')`)
-    .orderBy(desc(sql`to_char(${orders.orderDate}, 'YYYY-MM')`));
+    .groupBy(ym)
+    .orderBy(desc(ym));
   return rows.map((r) => r.ym);
 }
 

@@ -29,7 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDate } from "@/lib/format";
-import type { StagedPayload } from "@/lib/validation";
+import { customerFromOrderNumber, type StagedPayload } from "@/lib/validation";
 
 interface StagedItem {
   id: number;
@@ -70,8 +70,20 @@ function StagedCard({ item }: { item: StagedItem }) {
   const [rejecting, setRejecting] = useState(false);
   const [duplicatePrompt, setDuplicatePrompt] = useState<string | null>(null);
 
+  const customerFilled = payload.customer.trim() !== "";
+
   function setHeader<K extends keyof StagedPayload>(key: K, value: StagedPayload[K]) {
     setPayload((prev) => ({ ...prev, [key]: value }));
+  }
+
+  /** Correcting the order number re-applies the prefix rule (966… → 2470). */
+  function setOrderNumber(value: string) {
+    const forced = customerFromOrderNumber(value);
+    setPayload((prev) => ({
+      ...prev,
+      orderNumber: value,
+      customer: forced ?? prev.customer,
+    }));
   }
 
   function setLine(i: number, key: string, value: string) {
@@ -112,7 +124,11 @@ function StagedCard({ item }: { item: StagedItem }) {
           <FileText className="size-4 text-muted-foreground" />
           <bdi dir="ltr">{payload.orderNumber}</bdi>
           <span className="text-muted-foreground font-normal">·</span>
-          <span>{payload.customer}</span>
+          {payload.customer.trim() ? (
+            <span>{payload.customer}</span>
+          ) : (
+            <span className="font-normal text-amber-600">לקוח לא זוהה</span>
+          )}
           <Badge variant="outline">{FORMAT_LABELS[payload.sourceFormat] ?? payload.sourceFormat}</Badge>
           {payload.sourceFile && (
             <Badge variant="secondary" dir="ltr" className="max-w-48 truncate">
@@ -125,11 +141,25 @@ function StagedCard({ item }: { item: StagedItem }) {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="flex flex-col gap-1">
             <Label className="text-xs">לקוח</Label>
-            <Input value={payload.customer} onChange={(e) => setHeader("customer", e.target.value)} />
+            <Input
+              value={payload.customer}
+              onChange={(e) => setHeader("customer", e.target.value)}
+              placeholder="שם הלקוח המזמין"
+              aria-invalid={!customerFilled}
+            />
+            {!customerFilled && (
+              <p className="text-xs text-amber-600">
+                יש להזין את שם הלקוח שהוציא את ההזמנה (לא שם החברה שלנו) לפני אישור.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-1">
             <Label className="text-xs">מספר הזמנה</Label>
-            <Input dir="ltr" value={payload.orderNumber} onChange={(e) => setHeader("orderNumber", e.target.value)} />
+            <Input
+              dir="ltr"
+              value={payload.orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+            />
           </div>
           <div className="flex flex-col gap-1">
             <Label className="text-xs">תאריך הזמנה</Label>
@@ -204,7 +234,11 @@ function StagedCard({ item }: { item: StagedItem }) {
               <X className="size-4" />
               דחה
             </Button>
-            <Button className="gap-1" disabled={pending} onClick={() => approve(false)}>
+            <Button
+              className="gap-1"
+              disabled={pending || !customerFilled}
+              onClick={() => approve(false)}
+            >
               <Check className="size-4" />
               {pending ? "שומר..." : "אשר והוסף למעקב"}
             </Button>
