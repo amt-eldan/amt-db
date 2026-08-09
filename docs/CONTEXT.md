@@ -88,7 +88,37 @@
 (הנרמול), `validation`. הדשבורד למשל לא מחשב כלום בעצמו: `buildDashboard` מקבל את השורות
 ומגדיר כל מספר לפי המסך שהוא מקשר אליו (רווח דרך `lib/profit`, סטטוס דרך `lib/status`, חודש =
 חודשי תאריך הזמנה על שורות סגורות בדיוק כמו `/monthly`) — כך שאף מספר לא יכול לסתור את המסך
-שמאחוריו. 123 טסטים, `npm run test`.
+שמאחוריו. 162 טסטים, `npm run test`.
+
+### יש שתי דלתות אל שטרי המטען, ומאחוריהן פונקציה אחת
+נוסף endpoint של MCP (`/api/mcp/<token>`) כדי שמשימה מתוזמנת ב-claude.ai תוכל לקרוא את
+ה-worklist ולכתוב חזרה. **למה לא ה-REST הקיים:** הסנדבוקס של משימה מתוזמנת חסום ליציאה
+לאינטרנט ואין בו secret store, ולכן הוא לא יכול להגיע ל-`/api/bol/*` בכלל; custom connector
+נקרא מהתשתית של Anthropic ולא מתוך הסנדבוקס, ועוקף את שני החסמים — אבל מדבר MCP בלבד.
+
+לולאת הכתיבה עברה מתוך ה-route ל-`src/lib/bol-write.ts`, ושני המסלולים קוראים לה. **זה
+העיקר בשינוי הזה:** מילוי `bol` צובע שורה בירוק ("הגיע"), ושתי לוגיקות כתיבה נפרדות לאותו
+שדה היו מייצרות בדיוק את הבאג שההגנות נועדו למנוע. החוזה של ה-REST לא זז — הוא בשימוש.
+
+שתי החלטות שכדאי לא לשבור:
+- **הטוקן בכתובת** (`BOL_AGENT_TOKEN`, אותו סוד של ה-REST), כי קונקטור שומר כתובת אחת ובלי
+  headers. לכן ההשוואה timing-safe על SHA-256 של שני הצדדים (`src/lib/agent-token.ts`),
+  וטוקן שגוי מקבל **404 ולא 401** — מי שמנחש לא מקבל אישור שהנתיב קיים. הכתובת היא סוד,
+  ולכן לא נרשמת ללוגים בקוד (Vercel רושם נתיבים בעצמו — זה חלק ממחיר הפשרה).
+- **ה-JSON Schema של `bol_submit_matches` נוצר מ-`bolMatchInput`** דרך `z.toJSONSchema`, ולא
+  נכתב ביד. מה שהסוכן רואה הוא מה שנאכף, ואין דרך שהם ייפרדו.
+
+**המלכודת שנפלנו בה:** קונקטור מחפש שירות התחברות ב-`/.well-known/oauth-*` לפני שהוא מדבר
+MCP. ברירת המחדל של ה-proxy — להפנות כל נתיב לא מוכר ל-`/login` — נתנה לחיפוש הזה 307 ואז
+**200 עם HTML** במקום מטא-דאטה, והקונקטור דיווח "Couldn't register with … sign-in service":
+הוא מצא שירות התחברות שלא קיים. ה-proxy מחזיר עכשיו 404 נקי לנתיבי החיפוש (כולל הווריאנטים
+של RFC 8414/9728 שמצרפים את נתיב המשאב בסוף), עם טסט על `isOAuthDiscoveryPath` — כי כשזה
+שבור זה לא נכשל ברעש, אלא נראה כמו בעיית התחברות אצל הלקוח.
+
+`@modelcontextprotocol/sdk` נשקל ונדחה: ה-transport שלו כתוב מול `IncomingMessage`/
+`ServerResponse` של Node, ו-route handler ב-Next 16 מקבל `Request` ומחזיר `Response`.
+הגישור דורש adapter ו-session store שאין להם שימוש כאן (שני כלים, בלי מנויים, כל קריאה
+עצמאית), והדיספאטצ' עצמו הוא כמה עשרות שורות.
 
 ### כל כתיבה נרשמת ב-`audit_log`
 זה מה שמאפשר את פאנל "פעילות אחרונה" בדשבורד, ובשיוכים גם את `shippingCosts` שנכתבו.
@@ -172,4 +202,22 @@ src/app/actions/courier.ts            אישור/דחייה/שיוך מחדש/מ
 src/app/api/courier-invoices/**       העלאה + הגשת PDF (מאושר וממתין)
 src/components/courier/**             כרטיס אישור, טבלת שיוך, בורר שורה, sheets
 src/components/dashboard/**           הדשבורד + גרף המגמה
+src/lib/bol-write.ts                  כתיבת שטרי מטען + כל ההגנות (משותף ל-REST ול-MCP)
+src/lib/mcp.ts                        שרת MCP: כלים, סכימות, דיספאטצ' JSON-RPC (טסטים)
+src/lib/agent-token.ts                השוואת טוקן timing-safe (טסטים)
+src/app/api/mcp/[token]/route.ts      ה-endpoint לקונקטור של claude.ai
 ```
+
+### איך בודקים את ה-connector בלי Neon
+הפרוטוקול לא נוגע במסד עד `tools/call`, ולכן `initialize`, `tools/list`, בדיקת הטוקן
+והוולידציה נבדקים מול `next start` רגיל בלי DB:
+
+```bash
+BOL_AGENT_TOKEN=test-token npx next start -p 3111
+curl -s -X POST localhost:3111/api/mcp/test-token \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:3111/api/mcp/wrong  # 404
+```
+
+כך נבדק בפועל בסשן הזה, כולל: 404 לטוקן שגוי, 405 ל-GET, 202 ל-`notifications/initialized`,
+400 ל-JSON פגום, batch של הפרוטוקול הישן, ומסד שלא זמין שחוזר כ-`-32603` ולא כ-500 עירום.
