@@ -4,6 +4,7 @@ import { Bot } from "lucide-react";
 import { EditButton } from "@/components/lines/edit-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -44,6 +45,7 @@ export function BolTable({
               <TableHead>שטר מטען</TableHead>
               <TableHead>חברת הובלה</TableHead>
               <TableHead>סטטוס משלוח</TableHead>
+              <TableHead>עדכון אספקה</TableHead>
               <TableHead>צפי הגעה</TableHead>
               <TableHead>מקור</TableHead>
               <TableHead className="w-20">פעולות</TableHead>
@@ -71,6 +73,9 @@ export function BolTable({
                 <TableCell>{row.carrier ?? "—"}</TableCell>
                 <TableCell>
                   <ShipmentStatusBadge row={row} />
+                </TableCell>
+                <TableCell className="max-w-56 align-top">
+                  <DeliveryUpdate text={row.deliveryUpdate} />
                 </TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">
                   {formatDate(row.shipmentEta)}
@@ -115,6 +120,12 @@ export function BolTable({
                     עדכון: <bdi dir="ltr">{formatTimestamp(row.shipmentStatusAt)}</bdi>
                   </span>
                 )}
+                {row.deliveryUpdate && (
+                  <span className="col-span-2 flex gap-1">
+                    <span className="shrink-0">אספקה:</span>
+                    <DeliveryUpdate text={row.deliveryUpdate} />
+                  </span>
+                )}
               </div>
               <div className="flex items-center justify-between gap-2">
                 <EditButton onClick={() => onEdit(row)} />
@@ -132,10 +143,10 @@ export function BolTable({
 }
 
 /**
- * The normalized shipment status, with the carrier's own wording as the tooltip.
- * A line holding a BOL but no readable status reads "לא ידוע" rather than being
- * dressed up as in transit — the normalization exists for filtering, so the raw
- * text has to stay reachable.
+ * The normalized shipment status. A line holding a BOL but no readable status
+ * reads "לא ידוע" rather than being dressed up as in transit — the normalization
+ * exists for filtering, and the carrier's own wording stays reachable in the
+ * "עדכון אספקה" column next door.
  */
 function ShipmentStatusBadge({ row }: { row: LineRow }) {
   if (!hasBol(row)) return <span className="text-muted-foreground">—</span>;
@@ -150,10 +161,28 @@ function ShipmentStatusBadge({ row }: { row: LineRow }) {
     <Badge
       variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
       className={cn("whitespace-nowrap", !known && "text-muted-foreground")}
-      title={row.deliveryUpdate ?? undefined}
     >
       {label}
     </Badge>
+  );
+}
+
+/**
+ * The free-text supply update, in the main table rather than behind the edit
+ * sheet — it is what the carrier last said, and reading it is the reason to open
+ * this screen. Clamped to two lines so one chatty carrier cannot stretch every
+ * row, with the full text a click away for the ones that get cut.
+ */
+function DeliveryUpdate({ text }: { text: string | null }) {
+  if (!text?.trim()) return <span className="text-muted-foreground">—</span>;
+
+  return (
+    <Popover>
+      <PopoverTrigger className="text-start line-clamp-2 cursor-pointer hover:underline">
+        {text}
+      </PopoverTrigger>
+      <PopoverContent className="w-80 text-sm whitespace-pre-wrap">{text}</PopoverContent>
+    </Popover>
   );
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { updateLineFields } from "@/app/actions/orders";
@@ -28,6 +28,25 @@ import { MANUAL_STATUSES } from "@/lib/status";
 
 const AUTO = "__auto__";
 
+/** Every field the sheet edits, as the strings its inputs hold. */
+function formFrom(line: LineRow): Record<string, string> {
+  return {
+    qty: line.qty ?? "",
+    unitPrice: line.unitPrice ?? "",
+    poNumber: line.poNumber ?? "",
+    supplier: line.supplier ?? "",
+    buyPrice: line.buyPrice ?? "",
+    shippingCost: line.shippingCost ?? "",
+    contractDueDate: line.contractDueDate ?? "",
+    deliveryUpdate: line.deliveryUpdate ?? "",
+    paymentMethod: line.paymentMethod ?? "",
+    bol: line.bol ?? "",
+    carrier: line.carrier ?? "",
+    notes: line.notes ?? "",
+    manualStatus: line.manualStatus ?? AUTO,
+  };
+}
+
 /**
  * Shared line editor for the open-orders list and the monthly ledger. It saves
  * every manual field at once, so `line` must be a full row — a field missing
@@ -44,24 +63,14 @@ export function LineEditSheet({
   const [pending, startTransition] = useTransition();
   const [form, setForm] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (!line) return;
-    setForm({
-      qty: line.qty ?? "",
-      unitPrice: line.unitPrice ?? "",
-      poNumber: line.poNumber ?? "",
-      supplier: line.supplier ?? "",
-      buyPrice: line.buyPrice ?? "",
-      shippingCost: line.shippingCost ?? "",
-      contractDueDate: line.contractDueDate ?? "",
-      deliveryUpdate: line.deliveryUpdate ?? "",
-      paymentMethod: line.paymentMethod ?? "",
-      bol: line.bol ?? "",
-      carrier: line.carrier ?? "",
-      notes: line.notes ?? "",
-      manualStatus: line.manualStatus ?? AUTO,
-    });
-  }, [line]);
+  // Reset the draft when a different line is opened, during render rather than in
+  // an effect: an effect would paint the previous line's values for one frame,
+  // which on this sheet means briefly showing another order's numbers.
+  const [editedLineId, setEditedLineId] = useState<number | null>(null);
+  if (line && line.lineId !== editedLineId) {
+    setEditedLineId(line.lineId);
+    setForm(formFrom(line));
+  }
 
   function set(key: string, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));

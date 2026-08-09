@@ -245,7 +245,7 @@ export function OpenOrdersView({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-8" />
-                    <TableHead>מס' הזמנה</TableHead>
+                    <TableHead>מס&apos; הזמנה</TableHead>
                     <TableHead>תאריך הזמנה</TableHead>
                     <TableHead>P/N</TableHead>
                     <TableHead>כמות</TableHead>

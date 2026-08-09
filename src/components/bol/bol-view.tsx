@@ -41,6 +41,8 @@ export function BolView({ lines }: { lines: LineRow[] }) {
         line.supplier,
         line.bol,
         line.carrier,
+        // Searchable now that it is on screen: "נתקע במכס" is a thing to look for.
+        line.deliveryUpdate,
       ].some((v) => v?.toLowerCase().includes(q));
     });
   }, [scoped, search, missingOnly, inAirOnly]);
@@ -58,7 +60,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
   function exportCsv() {
     const headers = [
       "לקוח", "מס' הזמנה", "תאריך הזמנה", "P/N", "הזמנת רכש", "ספק",
-      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "צפי הגעה", "מקור", "תאריך יעד",
+      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "עדכון אספקה", "צפי הגעה", "מקור", "תאריך יעד",
     ];
     const escape = (v: string | number | null | undefined) => {
       const s = v === null || v === undefined ? "" : String(v);
@@ -75,6 +77,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
         line.bol,
         line.carrier,
         hasBol(line) ? (line.shipmentStatus ?? "") : "",
+        line.deliveryUpdate,
         formatDate(line.shipmentEta),
         hasBol(line) ? (line.bolSource === "auto" ? "אוטומטי" : "ידני") : "",
         formatDate(line.contractDueDate),
@@ -125,7 +128,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
         <div className="relative flex-1">
           <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
           <Input
-            placeholder="חיפוש לקוח / מס' הזמנה / P/N / הזמנת רכש / ספק / שטר מטען..."
+            placeholder="חיפוש לקוח / מס' הזמנה / P/N / הזמנת רכש / ספק / שטר מטען / עדכון אספקה..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="ps-9"
