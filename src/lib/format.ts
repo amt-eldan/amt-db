@@ -1,3 +1,5 @@
+import { parseNumeric } from "./numeric";
+
 const ilsFormatter = new Intl.NumberFormat("he-IL", {
   style: "currency",
   currency: "ILS",
@@ -9,17 +11,13 @@ const numberFormatter = new Intl.NumberFormat("he-IL", {
 });
 
 export function formatILS(value: number | string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
-  const n = typeof value === "string" ? parseFloat(value) : value;
-  if (Number.isNaN(n)) return "—";
-  return ilsFormatter.format(n);
+  const n = parseNumeric(value);
+  return n === null ? "—" : ilsFormatter.format(n);
 }
 
 export function formatNumber(value: number | string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
-  const n = typeof value === "string" ? parseFloat(value) : value;
-  if (Number.isNaN(n)) return "—";
-  return numberFormatter.format(n);
+  const n = parseNumeric(value);
+  return n === null ? "—" : numberFormatter.format(n);
 }
 
 /**
@@ -63,6 +61,20 @@ export function parseDotDate(s: string | null | undefined): string | null {
   if (!m) return null;
   const [, d, mo, y] = m;
   return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+/**
+ * A calendar month as a half-open ISO date range: [from, to).
+ *
+ * Used instead of `extract(year/month from …)` in SQL, which cannot use an index
+ * on the date column. December rolls the year over.
+ */
+export function monthRange(year: number, month: number): { from: string; to: string } {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    from: `${year}-${pad(month)}-01`,
+    to: month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`,
+  };
 }
 
 export const HEBREW_MONTHS = [

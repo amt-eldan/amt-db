@@ -19,11 +19,13 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/", label: "דשבורד ניהול", icon: LayoutDashboard },
   { href: "/orders", label: "הזמנות פתוחות", icon: ClipboardList },
-  { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
+  // The monthly summary is read alongside the open-orders screen; intake is the
+  // occasional task, so it sits below the screens that get opened every day.
+  { href: "/monthly", label: "סיכום חודשי", icon: CalendarRange },
   { href: "/bol", label: "שטרי מטען", icon: Truck },
   { href: "/invoices", label: "חשבוניות ספק", icon: ReceiptText },
   { href: "/courier", label: "חשבוניות בלדר", icon: Bike },
-  { href: "/monthly", label: "סיכום חודשי", icon: CalendarRange },
+  { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
 ];
 
 export function Sidebar() {

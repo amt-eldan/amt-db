@@ -16,6 +16,7 @@ import {
 } from "@/db/schema";
 import type { BolCandidateLine } from "@/lib/bol-match";
 import type { CourierLineOption } from "@/lib/courier-match";
+import { monthRange } from "@/lib/format";
 import {
   courierInvoiceDraft,
   courierShipmentInput,
@@ -108,6 +109,14 @@ const lineColumns = {
   createdAt: orderLines.createdAt,
 };
 
+/**
+ * Every line, or only the open ones. The dashboard and the bills-of-lading screen
+ * both need the full set — the first to chart history, the second to let the
+ * archive be toggled without a round-trip.
+ *
+ * Screens that show open **or** archive and never both should use getLineSet
+ * instead, which does the split in SQL.
+ */
 export async function getLines(includeArchived: boolean): Promise<LineRow[]> {
   const rows = await db
     .select(lineColumns)
@@ -119,7 +128,56 @@ export async function getLines(includeArchived: boolean): Promise<LineRow[]> {
   return rows;
 }
 
+/**
+ * **Exactly one** of the two sets, for the open-orders screen — which shows either
+ * open lines or the archive, never both. Loading both and hiding half in the
+ * browser meant every page load shipped the whole (ever-growing) archive just to
+ * filter it away again.
+ */
+export async function getLineSet(archived: boolean): Promise<LineRow[]> {
+  const rows = await db
+    .select(lineColumns)
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(eq(orderLines.isOpen, !archived))
+    .orderBy(asc(customers.name), desc(orderLines.createdAt), desc(orderLines.id));
+  return rows;
+}
+
+/** The columns lineStatus() needs, plus the customer, for the header stat cards. */
+export type OpenStatusRow = Pick<
+  LineRow,
+  "customerName" | "manualStatus" | "bol" | "deliveryUpdate" | "notes" | "contractDueDate"
+>;
+
+/**
+ * Open lines, narrowed to just what the stat cards need.
+ *
+ * The "late" count depends on lineStatus(), whose priority rules must stay in one
+ * place rather than being reimplemented in SQL — so the rows are still counted in
+ * JS, but six columns of them instead of all twenty-five. Queried separately from
+ * getLines so the cards keep showing open-line figures while the archive is on
+ * screen.
+ */
+export async function getOpenStatusRows(): Promise<OpenStatusRow[]> {
+  return db
+    .select({
+      customerName: customers.name,
+      manualStatus: orderLines.manualStatus,
+      bol: orderLines.bol,
+      deliveryUpdate: orderLines.deliveryUpdate,
+      notes: orderLines.notes,
+      contractDueDate: orderLines.contractDueDate,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(eq(orderLines.isOpen, true));
+}
+
 export async function getMonthlyLines(year: number, month: number): Promise<LineRow[]> {
+  const { from, to } = monthRange(year, month);
   const rows = await db
     .select(lineColumns)
     .from(orderLines)
@@ -131,8 +189,14 @@ export async function getMonthlyLines(year: number, month: number): Promise<Line
         // so an order received in August shows up in August even though nothing
         // has been delivered or closed yet. The view separates the two, and
         // profit stays "ממתין" on any line whose buy price is still unknown.
-        sql`extract(year from ${receivedDateSql}) = ${year}`,
-        sql`extract(month from ${receivedDateSql}) = ${month}`,
+        //
+        // A half-open range rather than extract(year/month from …), so the
+        // comparison stays one expression per row instead of two. It cannot use
+        // orders_order_date_idx — the coalesce in receivedDateSql makes it a
+        // function over the column — but the month page reads a bounded slice
+        // and a scan here is cheap.
+        sql`${receivedDateSql} >= ${from}`,
+        sql`${receivedDateSql} < ${to}`,
       ),
     )
     .orderBy(asc(customers.name), asc(receivedDateSql), asc(orderLines.id));

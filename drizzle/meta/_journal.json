@@ -43,6 +43,13 @@
       "when": 1785770303353,
       "tag": "0005_messy_korvac",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786279509712,
+      "tag": "0006_empty_energizer",
+      "breakpoints": true
     }
   ]
 }

@@ -52,11 +52,25 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: "neutral", label: "במסלול" },
 ];
 
-export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
+/** Open-line figures for the header cards — computed on the server, see page.tsx. */
+export interface OpenStats {
+  open: number;
+  customers: number;
+  late: number;
+}
+
+export function OpenOrdersView({
+  lines,
+  stats,
+  showArchived,
+}: {
+  lines: LineRow[];
+  stats: OpenStats;
+  showArchived: boolean;
+}) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState<LineRow | null>(null);
   const [deleting, setDeleting] = useState<LineRow | null>(null);
   // Optimistic manual-status overrides, applied immediately on "✓ הגיע".
@@ -71,11 +85,12 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
     });
   }, [lines, overrides]);
 
+  // The query already returns exactly one set (open or archived), so only the
+  // search box and the status select filter here. Both are instant on a screen's
+  // worth of rows and not worth a round-trip.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return withStatus.filter((line) => {
-      if (!showArchived && !line.isOpen) return false;
-      if (showArchived && line.isOpen) return false;
       if (statusFilter !== "all" && line.status !== statusFilter) return false;
       if (!q) return true;
       return [
@@ -87,7 +102,7 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
         line.bol,
       ].some((v) => v?.toLowerCase().includes(q));
     });
-  }, [withStatus, search, statusFilter, showArchived]);
+  }, [withStatus, search, statusFilter]);
 
   const groups = useMemo(() => {
     const map = new Map<string, typeof filtered>();
@@ -99,13 +114,6 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
     // Query already sorts: customer asc, created_at desc within group.
     return Array.from(map.entries());
   }, [filtered]);
-
-  const openLines = withStatus.filter((l) => l.isOpen);
-  const stats = {
-    open: openLines.length,
-    customers: new Set(openLines.map((l) => l.customerName)).size,
-    late: openLines.filter((l) => l.status === "red").length,
-  };
 
   function quickArrived(line: LineRow) {
     setOverrides((prev) => ({ ...prev, [line.lineId]: "הגיע" }));
@@ -161,7 +169,13 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
           {showArchived ? "שורות בארכיון" : "הזמנות פתוחות"}
         </h1>
         <div className="flex items-center gap-2 text-sm">
-          <Switch id="archived" checked={showArchived} onCheckedChange={setShowArchived} />
+          {/* In the URL, not in state: the server sends only the set being shown,
+              and the view survives a refresh or a shared link. */}
+          <Switch
+            id="archived"
+            checked={showArchived}
+            onCheckedChange={(on) => router.push(on ? "/orders?archived=1" : "/orders")}
+          />
           <label htmlFor="archived" className="text-muted-foreground cursor-pointer">
             הצג ארכיון
           </label>
@@ -203,9 +217,11 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
       {groups.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
-            {lines.length === 0
-              ? "אין עדיין הזמנות במערכת. אפשר לקלוט הזמנה חדשה במסך הקליטה."
-              : "לא נמצאו שורות מתאימות לחיפוש או לסינון."}
+            {lines.length > 0
+              ? "לא נמצאו שורות מתאימות לחיפוש או לסינון."
+              : showArchived
+                ? "אין שורות בארכיון. שורה שנסגרת מגיעה לכאן."
+                : "אין הזמנות פתוחות. אפשר לקלוט הזמנה חדשה במסך הקליטה."}
           </CardContent>
         </Card>
       ) : (

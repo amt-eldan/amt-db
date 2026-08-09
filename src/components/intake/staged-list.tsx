@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Check, FileText, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, FileText, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { approveStaged, rejectStaged } from "@/app/actions/staged";
 import {
@@ -31,10 +31,19 @@ import {
 import { formatDate } from "@/lib/format";
 import { customerFromOrderNumber, type StagedPayload } from "@/lib/validation";
 
-interface StagedItem {
+export interface StagedItem {
   id: number;
   createdAt: Date;
   payload: StagedPayload;
+  /** Things to double-check before approving — from the PDF extractor or the OCR pipeline. */
+  warnings: string[];
+}
+
+/** A staged row whose payload no longer parses, so it cannot be shown as a card. */
+export interface InvalidStagedItem {
+  id: number;
+  createdAt: Date;
+  reason: string;
 }
 
 const FORMAT_LABELS: Record<string, string> = {
@@ -43,8 +52,14 @@ const FORMAT_LABELS: Record<string, string> = {
   manual: "ידני",
 };
 
-export function StagedList({ items }: { items: StagedItem[] }) {
-  if (items.length === 0) {
+export function StagedList({
+  items,
+  invalid = [],
+}: {
+  items: StagedItem[];
+  invalid?: InvalidStagedItem[];
+}) {
+  if (items.length === 0 && invalid.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
         אין הזמנות סרוקות שממתינות לאישור.
@@ -53,13 +68,74 @@ export function StagedList({ items }: { items: StagedItem[] }) {
   }
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold">
-        ממתינות לאישור <Badge variant="secondary">{items.length}</Badge>
-      </h2>
-      {items.map((item) => (
-        <StagedCard key={item.id} item={item} />
-      ))}
+      {items.length > 0 && (
+        <>
+          <h2 className="text-lg font-semibold">
+            ממתינות לאישור <Badge variant="secondary">{items.length}</Badge>
+          </h2>
+          {items.map((item) => (
+            <StagedCard key={item.id} item={item} />
+          ))}
+        </>
+      )}
+      {invalid.length > 0 && <InvalidStagedCard items={invalid} />}
     </div>
+  );
+}
+
+/**
+ * Staged rows that cannot be rendered as a review card. Grouped into one block
+ * rather than hidden: an unreadable row is still a real order sitting in the
+ * database, and the only useful actions are "see that it exists" and "dismiss it".
+ */
+function InvalidStagedCard({ items }: { items: InvalidStagedItem[] }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
+  function dismiss(id: number) {
+    startTransition(async () => {
+      const result = await rejectStaged(id);
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.error);
+      router.refresh();
+    });
+  }
+
+  return (
+    <Card className="border-destructive/40">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <AlertTriangle className="size-4 text-destructive" />
+          הזמנות ממתינות שלא ניתן להציג
+          <Badge variant="secondary">{items.length}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <p className="text-xs text-muted-foreground">
+          המבנה של הרשומות האלה לא מזוהה, ולכן אי אפשר לאשר אותן מכאן. יש לקלוט את ההזמנה ידנית
+          ולמחוק את הרשומה.
+        </p>
+        {items.map((item) => (
+          <div key={item.id} className="flex items-center justify-between gap-2 border-t pt-2 text-sm">
+            <span>
+              <span className="text-muted-foreground">#{item.id}</span> · נקלט{" "}
+              {formatDate(item.createdAt.toISOString().slice(0, 10))}
+              <span className="block text-xs text-destructive">{item.reason}</span>
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1 text-destructive"
+              disabled={pending}
+              onClick={() => dismiss(item.id)}
+            >
+              <Trash2 className="size-3.5" />
+              מחק
+            </Button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -138,6 +214,20 @@ function StagedCard({ item }: { item: StagedItem }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {item.warnings.length > 0 && (
+          <div className="rounded-md border border-amber-400/60 bg-amber-100/50 p-3 dark:bg-amber-950/30">
+            <p className="flex items-center gap-1.5 text-sm font-medium text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="size-4 shrink-0" />
+              דורש בדיקה לפני אישור
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 ps-5 text-xs text-amber-900 dark:text-amber-100">
+              {item.warnings.map((warning, i) => (
+                <li key={i}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="flex flex-col gap-1">
             <Label className="text-xs">לקוח</Label>

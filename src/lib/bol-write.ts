@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { getBolCandidateLines } from "@/db/queries";
-import { orderLines } from "@/db/schema";
+import { orderLines, type OrderLine } from "@/db/schema";
 import { evaluateBolMatch, resolveBolLine, type BolMatchedBy } from "./bol-match";
 import { applyLineFields } from "./line-fields";
 import { normalizeCarrierStatus } from "./shipment-status";
@@ -55,27 +55,38 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
   const results: BolMatchResult[] = [];
 
   // Only fetched when at least one match arrived without a lineId, so the common
-  // worklist round trip costs exactly what it did before. Read once for the whole
-  // batch: a line filled earlier in this batch still looks empty here, and that is
-  // fine — the write guard below re-reads the line itself, so two numbers aimed at
-  // one line end up as one write and one reported conflict rather than an overwrite.
+  // worklist path costs exactly what it did before.
   const needsLookup = matches.some((m) => m.lineId === null);
   const candidates = needsLookup ? await getBolCandidateLines() : [];
 
+  // Resolve every match to a line first, so the rows can be read in one query
+  // below. A match whose keys name no single line is reported here and never
+  // reaches the write loop.
+  const targets: { match: BolMatchInput; lineId: number; matchedBy: BolMatchedBy }[] = [];
   for (const match of matches) {
-    let lineId = match.lineId;
-    let matchedBy: BolMatchedBy = "lineId";
-    if (lineId === null) {
-      const resolution = resolveBolLine(match, candidates);
-      if (resolution.lineId === null) {
-        results.push({ lineId: null, status: "skipped", reason: resolution.reason });
-        continue;
-      }
-      lineId = resolution.lineId;
-      matchedBy = resolution.matchedBy;
+    if (match.lineId !== null) {
+      targets.push({ match, lineId: match.lineId, matchedBy: "lineId" });
+      continue;
     }
+    const resolution = resolveBolLine(match, candidates);
+    if (resolution.lineId === null) {
+      results.push({ lineId: null, status: "skipped", reason: resolution.reason });
+      continue;
+    }
+    targets.push({ match, lineId: resolution.lineId, matchedBy: resolution.matchedBy });
+  }
 
-    const [existing] = await db.select().from(orderLines).where(eq(orderLines.id, lineId));
+  // One lookup for the whole batch rather than a round-trip per match — a nightly
+  // run covers tens of lines, and Neon is over the network.
+  const byId = new Map<number, OrderLine>();
+  const ids = [...new Set(targets.map((t) => t.lineId))];
+  if (ids.length > 0) {
+    const found = await db.select().from(orderLines).where(inArray(orderLines.id, ids));
+    for (const line of found) byId.set(line.id, line);
+  }
+
+  for (const { match, lineId, matchedBy } of targets) {
+    const existing = byId.get(lineId);
 
     const verdict = evaluateBolMatch(existing, match);
     if (!verdict.write) {
@@ -105,20 +116,30 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     }
     if (match.etaDate) fields.shipmentEta = match.etaDate;
 
-    await applyLineFields(line, fields, {
-      agent: "bol-tracking",
-      emailId: match.sourceEmailId,
-      quote: match.sourceQuote,
-      carrierStatus: match.statusText,
-      confidence: match.confidence,
-      // Which key found the line — part of what makes an unattended write
-      // reviewable, next to the email it came from.
-      matchedBy,
-      searchKeys:
-        matchedBy === "lineId"
-          ? null
-          : { pn: match.pn, poNumber: match.poNumber, orderNumber: match.orderNumber },
-    });
+    await applyLineFields(
+      line,
+      fields,
+      {
+        agent: "bol-tracking",
+        emailId: match.sourceEmailId,
+        quote: match.sourceQuote,
+        carrierStatus: match.statusText,
+        confidence: match.confidence,
+        // Which key found the line — part of what makes an unattended write
+        // reviewable, next to the email it came from.
+        matchedBy,
+        searchKeys:
+          matchedBy === "lineId"
+            ? null
+            : { pn: match.pn, poNumber: match.poNumber, orderNumber: match.orderNumber },
+      },
+      "agent:bol-tracking",
+    );
+
+    // Keep the cached row in step with what was just written, so a second match
+    // for the same line in this batch hits the never-overwrite guard instead of
+    // reading a stale empty `bol`.
+    byId.set(line.id, { ...line, ...fields } as OrderLine);
     results.push({ lineId, status: "written", matchedBy });
   }
 

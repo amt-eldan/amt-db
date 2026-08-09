@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireBearer } from "@/lib/api-auth";
 import { writeBolMatches } from "@/lib/bol-write";
 import { bolMatchInput } from "@/lib/validation";
 
@@ -13,11 +14,8 @@ import { bolMatchInput } from "@/lib/validation";
  * response.
  */
 export async function POST(request: NextRequest) {
-  const token = process.env.BOL_AGENT_TOKEN;
-  const header = request.headers.get("authorization") ?? "";
-  if (!token || header !== `Bearer ${token}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const denied = requireBearer(request, process.env.BOL_AGENT_TOKEN);
+  if (denied) return denied;
 
   let body: unknown;
   try {

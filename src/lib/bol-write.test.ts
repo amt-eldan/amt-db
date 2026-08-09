@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrderLine } from "@/db/schema";
 import { bolMatchInput } from "./validation";
 
-// The line the fake database will hand back, keyed by id. `eq` is stubbed to a
-// plain { value } so the fake can see which id was asked for without pulling in
-// drizzle's expression machinery.
+// The lines the fake database will hand back, keyed by id. `inArray` is stubbed
+// to a plain { ids } so the fake can see which ids were asked for without pulling
+// in drizzle's expression machinery.
 const { rows, candidates, applyLineFields, revalidatePath, getBolCandidateLines } = vi.hoisted(
   () => ({
     rows: new Map<number, unknown>(),
@@ -15,7 +15,7 @@ const { rows, candidates, applyLineFields, revalidatePath, getBolCandidateLines 
   }),
 );
 
-vi.mock("drizzle-orm", () => ({ eq: (_column: unknown, value: number) => ({ value }) }));
+vi.mock("drizzle-orm", () => ({ inArray: (_column: unknown, ids: number[]) => ({ ids }) }));
 // Stubbed rather than exercised: the resolver itself is covered in bol-match.test.ts,
 // and importing the real queries module would drag drizzle's query builder in.
 vi.mock("@/db/queries", () => ({ getBolCandidateLines }));
@@ -25,8 +25,8 @@ vi.mock("@/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: ({ value }: { value: number }) =>
-          Promise.resolve(rows.has(value) ? [rows.get(value)] : []),
+        where: ({ ids }: { ids: number[] }) =>
+          Promise.resolve(ids.filter((id) => rows.has(id)).map((id) => rows.get(id))),
       }),
     }),
   },

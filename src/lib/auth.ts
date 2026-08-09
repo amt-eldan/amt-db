@@ -15,6 +15,23 @@ function getSecret(): string {
   return `amt-session:${secret}`;
 }
 
+/**
+ * Length-checked constant-time string compare, for secrets.
+ *
+ * Hand-rolled on Web Crypto primitives rather than node:crypto.timingSafeEqual
+ * because this module also runs in the proxy (Edge) runtime. Unequal lengths
+ * return early — that leaks length, which for a fixed-width HMAC signature is
+ * nothing, and for the shared password is not worth padding around.
+ */
+export function secretEquals(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  if (ea.length !== eb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ea.length; i++) diff |= ea[i] ^ eb[i];
+  return diff === 0;
+}
+
 async function hmac(payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -31,7 +48,7 @@ async function hmac(payload: string): Promise<string> {
 
 export function checkPassword(password: string): boolean {
   const expected = process.env.APP_PASSWORD;
-  return !!expected && password === expected;
+  return !!expected && secretEquals(password, expected);
 }
 
 /** Returns the cookie value for a fresh session. */
@@ -53,5 +70,5 @@ export async function verifySessionValue(cookieValue: string | undefined): Promi
   const expiresAt = parseInt(payload, 10);
   if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) return false;
   const expected = await hmac(payload);
-  return sig === expected;
+  return secretEquals(sig, expected);
 }

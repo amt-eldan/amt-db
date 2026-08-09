@@ -5,6 +5,7 @@
  * extractors read a date or an amount the same way instead of three ways.
  */
 import { parseDotDate } from "./format";
+import { parseNumeric } from "./numeric";
 
 export function asRecord(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -20,18 +21,16 @@ export function str(v: unknown): string | null {
 }
 
 /**
- * number → itself (if finite); string → strip ₪ $ commas and whitespace, then
- * parseFloat. Returns `number | null`.
+ * The model's loosely-typed number → `number | null`.
+ *
+ * Delegates to parseNumeric rather than re-implementing the strip-and-parse: a
+ * second copy of those rules is how "₪1,200" came to mean different things in
+ * different code paths in the first place. This wrapper only narrows `unknown`,
+ * since the model may hand back anything.
  */
 export function num(v: unknown): number | null {
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    const cleaned = v.replace(/[₪$,\s]/g, "");
-    if (cleaned === "") return null;
-    const n = parseFloat(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
+  if (typeof v !== "number" && typeof v !== "string") return null;
+  return parseNumeric(v);
 }
 
 /** Real calendar date behind a yyyy-mm-dd string (rejects 2026-02-31 etc.). */
