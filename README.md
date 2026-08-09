@@ -38,7 +38,7 @@ npm run dev                      # http://localhost:3000
 | `DATABASE_URL` | מחרוזת חיבור **pooled** מ-Neon (הכתובת עם `-pooler`) |
 | `APP_PASSWORD` | הסיסמה המשותפת לכניסה למערכת |
 | `INGEST_TOKEN` | טוקן ל-API של קליטת הזמנות סרוקות |
-| `BOL_AGENT_TOKEN` | טוקן ל-API של מעקב שטרי המטען (נפרד, כדי שיהיה אפשר להחליף אותו לבד) |
+| `BOL_AGENT_TOKEN` | טוקן ל-API של מעקב שטרי המטען, וגם הטוקן שבכתובת ה-MCP connector (נפרד, כדי שיהיה אפשר להחליף אותו לבד) |
 
 ## Neon
 
@@ -215,6 +215,83 @@ Content-Type: application/json
   המטען מעבירה אליו בעלות (`bol_source` הופך ל-`manual`).
 
 ריצה חוזרת בטוחה: worklist כבר לא מחזיר שורות שמולאו, ולכן אין כפילויות.
+
+## Connector ל-claude.ai (MCP) — אותו מעקב, ממשימה מתוזמנת
+
+ה-REST API שלמעלה עובד מכל מקום שאפשר לשלוח ממנו בקשה עם טוקן. **משימה מתוזמנת ב-claude.ai
+היא לא מקום כזה:** הסנדבוקס שלה חסום ליציאה לאינטרנט ואין בו secret store, כך שאי אפשר לא
+לפתוח את הדומיין ולא להחזיק בו טוקן. Custom connector נקרא מהתשתית של Anthropic ולא מתוך
+הסנדבוקס, וזה עוקף את שני החסמים — אבל הוא מדבר MCP בלבד. לכן יש כאן endpoint שני, שמדבר
+MCP ומפעיל **בדיוק את אותו קוד** (`src/lib/bol-write.ts`): שני מסלולים שכותבים ל-`bol`
+בשתי לוגיקות נפרדות זה בדיוק הבאג שההגנות למעלה נועדו למנוע.
+
+**הכתובת:**
+
+```
+https://amt-db.vercel.app/api/mcp/<BOL_AGENT_TOKEN>
+```
+
+הטוקן בכתובת ולא בכותרת, כי קונקטור ב-claude.ai שומר כתובת אחת ובלי headers. לכן:
+
+- **הכתובת היא הסוד.** להתייחס אליה כמו לסיסמה — לא לשתף, לא להדביק בצ'אט, לא בצילום מסך.
+- טוקן שגוי, או `BOL_AGENT_TOKEN` שלא מוגדר בסביבה, מקבלים **404** ולא 401 — מי שמנחש לא
+  מקבל אישור שהנתיב קיים בכלל.
+- ההשוואה timing-safe (`crypto.timingSafeEqual` על SHA-256 של שני הצדדים), כדי שלא יהיה
+  אפשר לחלץ את הטוקן תו-אחר-תו לפי זמן התשובה.
+- החלפת טוקן = החלפת `BOL_AGENT_TOKEN` ב-Vercel והדבקת הכתובת החדשה בקונקטור. זה מבטל גם
+  את הגישה ל-REST API באותו רגע.
+
+### הכלים
+
+| כלי | מה הוא עושה |
+|---|---|
+| `bol_worklist` | בלי פרמטרים. מחזיר את אותן שורות בדיוק כמו `GET /api/bol/worklist`, כולל מפתחות החיפוש. סדר העדיפות (`poNumber` ← `pn` ← `orderNumber` ← `supplier`) כתוב ב-description של הכלי, כך שהסוכן מקבל אותו בלי שצריך לחזור עליו בהנחיה. |
+| `bol_submit_matches` | מקבל `matches` — התאמה אחת או מערך, באותה סכימה של `POST /api/bol/matches` (ה-JSON Schema שהסוכן רואה נוצר מ-`bolMatchInput` עצמה, ולכן לא יכול להיפרד ממנה). מחזיר את אותו `{ ok, written, skipped, results }`. |
+
+כל ההגנות שבפרק הקודם חלות כאן — אותה פונקציה כותבת: לא דורס שטר מטען קיים, רק שורות
+פתוחות, מדלג על `confidence` מתחת ל-0.5, לא דורס הערה אנושית ב-`delivery_update`, וכל כתיבה
+נרשמת ב-`audit_log` עם מזהה המייל והציטוט.
+
+### בדיקה מהירה ב-curl
+
+רשימת הכלים:
+
+```bash
+curl -s -X POST https://amt-db.vercel.app/api/mcp/$BOL_AGENT_TOKEN \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+קריאה ל-worklist:
+
+```bash
+curl -s -X POST https://amt-db.vercel.app/api/mcp/$BOL_AGENT_TOKEN \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+       "params":{"name":"bol_worklist","arguments":{}}}'
+```
+
+כתיבת התאמה:
+
+```bash
+curl -s -X POST https://amt-db.vercel.app/api/mcp/$BOL_AGENT_TOKEN \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call",
+       "params":{"name":"bol_submit_matches","arguments":{"matches":[
+         {"lineId":42,"bol":"1Z999AA10123456784","carrier":"UPS","confidence":0.95,
+          "sourceEmailId":"18fabc123","sourceQuote":"Your UPS shipment for PO-8871 has been delivered"}
+       ]}}}'
+```
+
+טוקן שגוי אמור להחזיר 404, ו-`GET` על אותה כתובת אמור להחזיר 405 (השרת stateless — אין
+stream לפתוח ואין session לשחזר).
+
+### חיבור ב-claude.ai
+
+1. **Settings → Connectors → Add custom connector**, ולהדביק את הכתובת המלאה עם הטוקן.
+   אין מה למלא ב-OAuth — האימות הוא הכתובת עצמה.
+2. לפתוח את המשימה המתוזמנת ולסמן בה **גם** את הקונקטור הזה וגם את Gmail: Gmail הוא מאיפה
+   קוראים, וזה לאן כותבים.
 
 ## חשבוניות בלדר — למה יש אישור ומה קורה בו
 

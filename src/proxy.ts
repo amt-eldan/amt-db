@@ -4,12 +4,14 @@ import { SESSION_COOKIE, verifySessionValue } from "@/lib/auth";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // /api/staged and /api/bol authenticate with their own bearer tokens;
-  // /login is public.
+  // /api/staged and /api/bol authenticate with their own bearer tokens, and
+  // /api/mcp with the token in its path (it is called by Anthropic's
+  // infrastructure, which carries no session cookie); /login is public.
   if (
     pathname === "/login" ||
     pathname.startsWith("/api/staged") ||
-    pathname.startsWith("/api/bol")
+    pathname.startsWith("/api/bol") ||
+    pathname.startsWith("/api/mcp")
   ) {
     return NextResponse.next();
   }
