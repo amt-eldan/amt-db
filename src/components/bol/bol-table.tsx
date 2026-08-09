@@ -74,8 +74,13 @@ export function BolTable({
                 <TableCell>
                   <ShipmentStatusBadge row={row} />
                 </TableCell>
-                <TableCell className="max-w-56 align-top">
-                  <DeliveryUpdate text={row.deliveryUpdate} />
+                <TableCell className="align-top">
+                  {/* The width lives on a div, not the cell: CSS ignores max-width
+                      on a table cell in auto layout, so the text would push the
+                      whole table sideways instead of wrapping. */}
+                  <div className="w-56">
+                    <DeliveryUpdate text={row.deliveryUpdate} />
+                  </div>
                 </TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">
                   {formatDate(row.shipmentEta)}
@@ -121,9 +126,11 @@ export function BolTable({
                   </span>
                 )}
                 {row.deliveryUpdate && (
-                  <span className="col-span-2 flex gap-1">
+                  <span className="col-span-2 flex gap-1 min-w-0">
                     <span className="shrink-0">אספקה:</span>
-                    <DeliveryUpdate text={row.deliveryUpdate} />
+                    <span className="min-w-0 flex-1">
+                      <DeliveryUpdate text={row.deliveryUpdate} />
+                    </span>
                   </span>
                 )}
               </div>
@@ -170,18 +177,23 @@ function ShipmentStatusBadge({ row }: { row: LineRow }) {
 /**
  * The free-text supply update, in the main table rather than behind the edit
  * sheet — it is what the carrier last said, and reading it is the reason to open
- * this screen. Clamped to two lines so one chatty carrier cannot stretch every
- * row, with the full text a click away for the ones that get cut.
+ * this screen. Wraps to at most three lines so one chatty carrier cannot stretch
+ * every row, with the full text a click away for the ones that get cut.
+ *
+ * `break-words` matters: a tracking URL or a long unbroken token has no space to
+ * wrap at, and without it the line would overflow its container.
  */
 function DeliveryUpdate({ text }: { text: string | null }) {
   if (!text?.trim()) return <span className="text-muted-foreground">—</span>;
 
   return (
     <Popover>
-      <PopoverTrigger className="text-start line-clamp-2 cursor-pointer hover:underline">
+      <PopoverTrigger className="block w-full text-start line-clamp-3 break-words cursor-pointer hover:underline">
         {text}
       </PopoverTrigger>
-      <PopoverContent className="w-80 text-sm whitespace-pre-wrap">{text}</PopoverContent>
+      <PopoverContent className="w-80 max-h-80 overflow-y-auto text-sm whitespace-pre-wrap break-words">
+        {text}
+      </PopoverContent>
     </Popover>
   );
 }
