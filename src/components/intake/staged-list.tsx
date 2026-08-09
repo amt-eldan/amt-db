@@ -29,7 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDate } from "@/lib/format";
-import type { StagedPayload } from "@/lib/validation";
+import { customerFromOrderNumber, type StagedPayload } from "@/lib/validation";
 
 interface StagedItem {
   id: number;
@@ -74,6 +74,16 @@ function StagedCard({ item }: { item: StagedItem }) {
 
   function setHeader<K extends keyof StagedPayload>(key: K, value: StagedPayload[K]) {
     setPayload((prev) => ({ ...prev, [key]: value }));
+  }
+
+  /** Correcting the order number re-applies the prefix rule (966… → 2470). */
+  function setOrderNumber(value: string) {
+    const forced = customerFromOrderNumber(value);
+    setPayload((prev) => ({
+      ...prev,
+      orderNumber: value,
+      customer: forced ?? prev.customer,
+    }));
   }
 
   function setLine(i: number, key: string, value: string) {
@@ -145,7 +155,11 @@ function StagedCard({ item }: { item: StagedItem }) {
           </div>
           <div className="flex flex-col gap-1">
             <Label className="text-xs">מספר הזמנה</Label>
-            <Input dir="ltr" value={payload.orderNumber} onChange={(e) => setHeader("orderNumber", e.target.value)} />
+            <Input
+              dir="ltr"
+              value={payload.orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+            />
           </div>
           <div className="flex flex-col gap-1">
             <Label className="text-xs">תאריך הזמנה</Label>

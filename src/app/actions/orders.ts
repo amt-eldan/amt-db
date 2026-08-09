@@ -8,7 +8,12 @@ import { audit } from "@/lib/audit";
 import { applyLineFields } from "@/lib/line-fields";
 import { requireSession } from "@/lib/require-session";
 import { MANUAL_STATUSES } from "@/lib/status";
-import { manualFieldsInput, orderInput, type OrderInput } from "@/lib/validation";
+import {
+  customerFromOrderNumber,
+  manualFieldsInput,
+  orderInput,
+  type OrderInput,
+} from "@/lib/validation";
 
 export type ActionResult =
   | { ok: true; message?: string }
@@ -46,7 +51,13 @@ async function getOrCreateCustomer(
 /** Creates order + lines in a transaction. Used by manual intake and staged approval. */
 export async function createOrder(input: OrderInput): Promise<ActionResult> {
   await requireSession();
-  const parsed = orderInput.safeParse(input);
+  // Some order numbers name their customer by themselves (966… is always 2470).
+  // Applied before validation, so such an order is filed correctly even when the
+  // document was read wrong — or when no name was read at all.
+  const byPrefix = customerFromOrderNumber(input.orderNumber ?? "");
+  const parsed = orderInput.safeParse(
+    byPrefix ? { ...input, customerName: byPrefix } : input,
+  );
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
   }

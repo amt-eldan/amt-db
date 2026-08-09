@@ -90,6 +90,30 @@ describe("normalizeExtractedOrder", () => {
     }
   });
 
+  it("files a 966 order under customer 2470, whatever the document said", () => {
+    const wrong = normalizeExtractedOrder(
+      raw({ orderNumber: "9661234", customer: "אלביט מערכות" }),
+      "po.pdf",
+      today,
+    );
+    expect(wrong.order.customer).toBe("2470");
+    expect(hasWarning(wrong.warnings, "הוחלף")).toBe(true);
+
+    // Nothing to flag when the document agrees, or when it named us / no one.
+    const agrees = normalizeExtractedOrder(raw({ orderNumber: "966", customer: "2470" }), "po.pdf", today);
+    expect(agrees.order.customer).toBe("2470");
+    expect(agrees.warnings).toEqual([]);
+
+    const blank = normalizeExtractedOrder(
+      raw({ orderNumber: "9660001", customer: "AMT" }),
+      "po.pdf",
+      today,
+    );
+    expect(blank.order.customer).toBe("2470");
+    expect(hasWarning(blank.warnings, "שם החברה שלנו")).toBe(false);
+    expect(hasWarning(blank.warnings, "לא זוהה שם לקוח")).toBe(false);
+  });
+
   it("keeps a real customer name, and warns only when none was read", () => {
     const named = normalizeExtractedOrder(raw({ customer: "אלביט מערכות" }), "po.pdf", today);
     expect(named.order.customer).toBe("אלביט מערכות");

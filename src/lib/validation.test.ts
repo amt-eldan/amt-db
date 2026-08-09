@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { bolMatchInput } from "./validation";
+import { bolMatchInput, customerFromOrderNumber } from "./validation";
+
+describe("customerFromOrderNumber", () => {
+  it("maps a 966 order onto customer 2470", () => {
+    expect(customerFromOrderNumber("966")).toBe("2470");
+    expect(customerFromOrderNumber("9661234")).toBe("2470");
+    expect(customerFromOrderNumber("  966-0042  ")).toBe("2470");
+  });
+
+  it("says nothing about every other number", () => {
+    for (const n of ["0226P02772", "4441537295", "96", "1966", "", "   ", "9-66"]) {
+      expect(customerFromOrderNumber(n), n).toBeNull();
+    }
+  });
+});
 
 const valid = { lineId: 7, bol: "1Z999AA10123456784" };
 

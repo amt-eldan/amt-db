@@ -28,7 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Customer } from "@/db/schema";
-import { isModOrderNumber } from "@/lib/validation";
+import { customerFromOrderNumber, isModOrderNumber } from "@/lib/validation";
 import { CustomerCombobox } from "./customer-combobox";
 
 interface LineDraft {
@@ -51,6 +51,18 @@ export function IntakeForm({ customers }: { customers: Customer[] }) {
   const [duplicatePrompt, setDuplicatePrompt] = useState<string | null>(null);
 
   const isMod = isModOrderNumber(orderNumber);
+  const byPrefix = customerFromOrderNumber(orderNumber);
+
+  /**
+   * Typing an order number whose prefix names its customer fills the customer in.
+   * The server enforces the rule anyway; doing it here means the form shows what
+   * is about to be saved instead of quietly overriding it.
+   */
+  function onOrderNumberChange(value: string) {
+    setOrderNumber(value);
+    const forced = customerFromOrderNumber(value);
+    if (forced) setCustomerName(forced);
+  }
 
   function setLine(i: number, key: keyof LineDraft, value: string) {
     setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, [key]: value } : l)));
@@ -115,6 +127,11 @@ export function IntakeForm({ customers }: { customers: Customer[] }) {
                 value={customerName}
                 onChange={setCustomerName}
               />
+              {byPrefix && (
+                <p className="text-xs text-muted-foreground">
+                  הזמנה שמתחילה ב-966 — הלקוח הוא {byPrefix}.
+                </p>
+              )}
               {isMod && (
                 <p className="text-xs text-amber-600">
                   הזמנת משהב&quot;ט — הלקוח הוא מספר קבוצת הרכש (למשל 134), לא &quot;משרד
@@ -128,7 +145,7 @@ export function IntakeForm({ customers }: { customers: Customer[] }) {
                 id="orderNumber"
                 dir="ltr"
                 value={orderNumber}
-                onChange={(e) => setOrderNumber(e.target.value)}
+                onChange={(e) => onOrderNumberChange(e.target.value)}
                 placeholder="0226P02556 / 4441537295"
               />
             </div>

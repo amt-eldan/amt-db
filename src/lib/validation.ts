@@ -6,6 +6,21 @@ export function isModOrderNumber(orderNumber: string): boolean {
   return /^444\d{7}$/.test(orderNumber.trim());
 }
 
+/**
+ * Order-number prefixes that name the customer on their own, whatever the
+ * document (or the extraction) says. Add a row here and every door in — manual
+ * form, PDF extraction, staged approval — starts honouring it.
+ */
+const CUSTOMER_BY_ORDER_PREFIX: ReadonlyArray<readonly [prefix: string, customer: string]> = [
+  ["966", "2470"],
+];
+
+/** The customer a number implies, or null when the prefix says nothing. */
+export function customerFromOrderNumber(orderNumber: string): string | null {
+  const trimmed = orderNumber.trim();
+  return CUSTOMER_BY_ORDER_PREFIX.find(([prefix]) => trimmed.startsWith(prefix))?.[1] ?? null;
+}
+
 const optionalText = z
   .string()
   .trim()

@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { isOwnCompanyName, OWN_COMPANY_LABEL } from "./company";
 import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
-import { isModOrderNumber, stagedPayload } from "./validation";
+import { customerFromOrderNumber, isModOrderNumber, stagedPayload } from "./validation";
 
 /**
  * A purchase order extracted from a PDF by Claude, shaped for the same
@@ -48,22 +48,37 @@ export function normalizeExtractedOrder(
     for (const w of obj.warnings) if (typeof w === "string" && w.trim()) warnings.push(w.trim());
   }
 
-  // The PO is addressed to us, so our own name sits in its "לכבוד" block. Reading
-  // it as the customer is the one mistake the prompt cannot fully prevent, and a
-  // wrong name here silently creates a bogus customer on approval — so drop it
-  // and let the reviewer type the buyer's name instead.
-  let customer = str(obj.customer);
-  if (customer && isOwnCompanyName(customer)) {
-    warnings.push(
-      `השם שזוהה כלקוח ("${customer}") הוא שם החברה שלנו — אנחנו הנמענים של ההזמנה, לא המזמינים. יש להזין את שם הלקוח המזמין ידנית לפני אישור`,
-    );
-    customer = null;
-  } else if (!customer) {
-    warnings.push("לא זוהה שם לקוח — יש למלא ידנית לפני אישור");
-  }
   const customerNote = str(obj.customerNote);
   const orderNumber = str(obj.orderNumber);
   const isMod = isModOrderNumber(orderNumber ?? "");
+
+  const read = str(obj.customer);
+
+  // A number that names its own customer beats whatever was read off the page —
+  // same reasoning as sourceFormat below: decided in code, never by the model.
+  const byPrefix = customerFromOrderNumber(orderNumber ?? "");
+
+  let customer: string | null;
+  if (byPrefix) {
+    if (read && read !== byPrefix && !isOwnCompanyName(read)) {
+      warnings.push(
+        `הלקוח שזוהה במסמך ("${read}") הוחלף ב-"${byPrefix}" לפי מספר ההזמנה ${orderNumber}`,
+      );
+    }
+    customer = byPrefix;
+  } else if (read && isOwnCompanyName(read)) {
+    // The PO is addressed to us, so our own name sits in its "לכבוד" block.
+    // Reading it as the customer is the one mistake the prompt cannot fully
+    // prevent, and a wrong name here silently creates a bogus customer on
+    // approval — so drop it and let the reviewer type the buyer's name instead.
+    warnings.push(
+      `השם שזוהה כלקוח ("${read}") הוא שם החברה שלנו — אנחנו הנמענים של ההזמנה, לא המזמינים. יש להזין את שם הלקוח המזמין ידנית לפני אישור`,
+    );
+    customer = null;
+  } else {
+    customer = read;
+    if (!customer) warnings.push("לא זוהה שם לקוח — יש למלא ידנית לפני אישור");
+  }
 
   // Header date. Absent → prominent warning (never fabricate — StagedCard lets
   // the reviewer fill it in). Present but out of range → warning.
@@ -159,6 +174,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 לקוח (customer) — כאן הכי קל לטעות, קרא בעיון:
 - הלקוח הוא הגורם שהוציא את ההזמנה, כלומר הקונה: בדרך כלל שם החברה שבראש המסמך (לוגו / נייר מכתבים), או השם שבשדות "מזמין", "קונה", "Bill To", "Buyer", "Ordered By".
 - אנחנו הנמענים של ההזמנה, לא הלקוח. הבלוקים "לכבוד", "ספק", "אל", "Vendor", "Supplier", "To" מכילים את שמנו — ${OWN_COMPANY_LABEL} (מופיע גם כ-AMT, א.מ.ט, אטריום). לעולם אל תחזיר שם כזה בשדה customer. אם השם היחיד שהצלחת לקרוא הוא שלנו — השמט את customer לגמרי והוסף warning.
+- מספר הזמנה שמתחיל ב-966 שייך תמיד ללקוח "2470" — החזר 2470 בשדה customer, גם אם במסמך מופיע שם אחר.
 - customer הוא שם של ארגון, לא של אדם. שם של איש קשר, רוכש, מאשר או חותם (גם כשהוא מופיע ליד טלפון או אימייל) לא נכנס ל-customer; אם הוא רלוונטי — כתוב אותו ב-customerNote.
 - הזמנת משרד הביטחון (מספר שמתחיל ב-444): הלקוח הוא מספר קבוצת הרכש (למשל 134, 131, 135, 137), שאותו משחזרים מכתובת האימייל של הרוכש. לעולם אל תכתוב "משרד הביטחון" בשדה customer — את התיאור המילולי כתוב ב-customerNote.
 
