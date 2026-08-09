@@ -5,13 +5,20 @@ import { bolMatchInput } from "./validation";
 // The line the fake database will hand back, keyed by id. `eq` is stubbed to a
 // plain { value } so the fake can see which id was asked for without pulling in
 // drizzle's expression machinery.
-const { rows, applyLineFields, revalidatePath } = vi.hoisted(() => ({
-  rows: new Map<number, unknown>(),
-  applyLineFields: vi.fn(),
-  revalidatePath: vi.fn(),
-}));
+const { rows, candidates, applyLineFields, revalidatePath, getBolCandidateLines } = vi.hoisted(
+  () => ({
+    rows: new Map<number, unknown>(),
+    candidates: [] as unknown[],
+    applyLineFields: vi.fn(),
+    revalidatePath: vi.fn(),
+    getBolCandidateLines: vi.fn(),
+  }),
+);
 
 vi.mock("drizzle-orm", () => ({ eq: (_column: unknown, value: number) => ({ value }) }));
+// Stubbed rather than exercised: the resolver itself is covered in bol-match.test.ts,
+// and importing the real queries module would drag drizzle's query builder in.
+vi.mock("@/db/queries", () => ({ getBolCandidateLines }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("./line-fields", () => ({ applyLineFields }));
 vi.mock("@/db", () => ({
@@ -47,8 +54,11 @@ const writtenFields = (call = 0) => applyLineFields.mock.calls[call][1] as Recor
 
 beforeEach(() => {
   rows.clear();
+  candidates.length = 0;
   applyLineFields.mockClear();
   revalidatePath.mockClear();
+  getBolCandidateLines.mockReset();
+  getBolCandidateLines.mockImplementation(async () => candidates);
 });
 
 describe("writeBolMatches", () => {
@@ -61,7 +71,7 @@ describe("writeBolMatches", () => {
       ok: true,
       written: 1,
       skipped: 0,
-      results: [{ lineId: 42, status: "written" }],
+      results: [{ lineId: 42, status: "written", matchedBy: "lineId" }],
     });
     expect(writtenFields()).toMatchObject({
       bol: "1Z999AA10123456784",
@@ -165,5 +175,52 @@ describe("writeBolMatches", () => {
     const summary = await writeBolMatches([]);
     expect(summary).toEqual({ ok: true, written: 0, skipped: 0, results: [] });
     expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("never looks up candidates when every match names its line", async () => {
+    rows.set(42, line());
+
+    await writeBolMatches([match()]);
+
+    expect(getBolCandidateLines).not.toHaveBeenCalled();
+  });
+
+  it("resolves a match with no lineId from the keys the email quoted", async () => {
+    rows.set(42, line());
+    candidates.push({
+      lineId: 42,
+      orderNumber: "ORD-1",
+      pn: "ABC-123",
+      sku: null,
+      poNumber: "PO-9",
+      supplier: "Acme",
+      bol: null,
+      isOpen: true,
+    });
+
+    const summary = await writeBolMatches([
+      bolMatchInput.parse({ bol: "1Z999AA10123456784", poNumber: "PO-9" }),
+    ]);
+
+    expect(summary).toMatchObject({
+      written: 1,
+      results: [{ lineId: 42, status: "written", matchedBy: "poNumber" }],
+    });
+    // The keys that found the line travel to the audit trail next to the email.
+    expect(applyLineFields.mock.calls[0][2]).toMatchObject({
+      matchedBy: "poNumber",
+      searchKeys: { poNumber: "PO-9" },
+    });
+  });
+
+  it("reports a lineId-less match it could not resolve instead of guessing", async () => {
+    const summary = await writeBolMatches([
+      bolMatchInput.parse({ bol: "1Z999AA10123456784", pn: "NOT-HERE" }),
+    ]);
+
+    expect(summary).toMatchObject({ written: 0, skipped: 1 });
+    expect(summary.results[0]).toMatchObject({ lineId: null, status: "skipped" });
+    expect(summary.results[0].reason).toBeTruthy();
+    expect(applyLineFields).not.toHaveBeenCalled();
   });
 });

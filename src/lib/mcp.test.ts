@@ -80,8 +80,11 @@ describe("tools/list", () => {
     expect(tools.map((t) => t.name)).toEqual(["bol_worklist", "bol_submit_matches"]);
 
     const matches = tools[1].inputSchema.properties as { matches: { anyOf: [{ items: object }] } };
-    const item = matches.matches.anyOf[0].items as { required: string[] };
-    expect(item.required).toEqual(["lineId", "bol"]);
+    // `bol` is the only required key: a match may name its lineId or, when the
+    // email belongs to no worklist line, quote the keys and let the server resolve it.
+    const item = matches.matches.anyOf[0].items as { required: string[]; properties: object };
+    expect(item.required).toEqual(["bol"]);
+    expect(Object.keys(item.properties)).toContain("lineId");
   });
 
   it("documents the search-key priority the agent needs", async () => {
