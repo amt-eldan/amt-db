@@ -6,6 +6,7 @@ import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "luc
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
 import { LineEditSheet } from "@/components/lines/line-edit-sheet";
+import { ReceivedDate } from "@/components/lines/received-date";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -229,6 +230,7 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
                   <TableRow>
                     <TableHead className="w-8" />
                     <TableHead>מס' הזמנה</TableHead>
+                    <TableHead>תאריך הזמנה</TableHead>
                     <TableHead>P/N</TableHead>
                     <TableHead>כמות</TableHead>
                     <TableHead>שווי</TableHead>
@@ -247,6 +249,9 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
                       </TableCell>
                       <TableCell dir="ltr" className="text-end font-medium">
                         {line.orderNumber}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        <ReceivedDate line={line} />
                       </TableCell>
                       <TableCell dir="ltr" className="text-end">
                         {line.pn ?? "—"}
@@ -319,8 +324,12 @@ export function OpenOrdersView({ lines }: { lines: LineRow[] }) {
                     <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
                       <span>הזמנה: <bdi dir="ltr">{line.orderNumber}</bdi></span>
                       <span>כמות: <bdi dir="ltr">{formatNumber(line.qty)}</bdi></span>
-                      <span>ספק: {line.supplier ?? "—"}</span>
+                      <span>
+                        נקלטה: <bdi dir="ltr">{formatDate(line.receivedDate)}</bdi>
+                        {line.orderDate === null && " (לפי קליטה)"}
+                      </span>
                       <span>יעד: <bdi dir="ltr">{formatDate(line.contractDueDate)}</bdi></span>
+                      <span>ספק: {line.supplier ?? "—"}</span>
                       {line.poNumber && <span>רכש: <bdi dir="ltr">{line.poNumber}</bdi></span>}
                       {line.bol?.trim() && (
                         <span className="col-span-2">
