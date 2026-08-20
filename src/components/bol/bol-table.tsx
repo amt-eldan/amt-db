@@ -2,6 +2,7 @@
 
 import { Bot } from "lucide-react";
 import { EditButton } from "@/components/lines/edit-button";
+import { LateDeliveryBadge } from "@/components/lines/late-delivery-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -154,6 +155,10 @@ export function BolTable({
  * reads "לא ידוע" rather than being dressed up as in transit — the normalization
  * exists for filtering, and the carrier's own wording stays reachable in the
  * "עדכון אספקה" column next door.
+ *
+ * "נמסר" is green here for the same reason it is green on the orders screen: it
+ * is the one status that means the goods arrived, and two screens disagreeing
+ * about what green means is worse than either choice.
  */
 function ShipmentStatusBadge({ row }: { row: LineRow }) {
   if (!hasBol(row)) return <span className="text-muted-foreground">—</span>;
@@ -165,12 +170,24 @@ function ShipmentStatusBadge({ row }: { row: LineRow }) {
     : SHIPMENT_STATUS_UNKNOWN_LABEL;
 
   return (
-    <Badge
-      variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
-      className={cn("whitespace-nowrap", !known && "text-muted-foreground")}
-    >
-      {label}
-    </Badge>
+    <span className="flex flex-wrap items-center gap-1">
+      <Badge
+        variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
+        className={cn(
+          "whitespace-nowrap",
+          !known && "text-muted-foreground",
+          status === "delivered" && "bg-green-500/15 text-green-700 dark:text-green-500",
+        )}
+      >
+        {label}
+      </Badge>
+      {row.deliveredAt && (
+        <span className="text-xs text-muted-foreground" dir="ltr">
+          {formatDate(row.deliveredAt)}
+        </span>
+      )}
+      <LateDeliveryBadge line={row} />
+    </span>
   );
 }
 

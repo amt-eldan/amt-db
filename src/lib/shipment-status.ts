@@ -105,3 +105,12 @@ export function normalizeCarrierStatus(text: string | null | undefined): Shipmen
 export function isSettled(status: ShipmentStatus | null): boolean {
   return status === "delivered";
 }
+
+/**
+ * Narrows the loose `string | null` the database hands back (LineRow.shipmentStatus)
+ * to the union. Anything that is not one of SHIPMENT_STATUSES becomes null —
+ * an unrecognised value must read as "we do not know", never as a status.
+ */
+export function asShipmentStatus(value: string | null | undefined): ShipmentStatus | null {
+  return SHIPMENT_STATUSES.includes(value as ShipmentStatus) ? (value as ShipmentStatus) : null;
+}

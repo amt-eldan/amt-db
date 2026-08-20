@@ -50,6 +50,13 @@
       "when": 1786279509712,
       "tag": "0006_empty_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787248419765,
+      "tag": "0007_thick_post",
+      "breakpoints": true
     }
   ]
 }

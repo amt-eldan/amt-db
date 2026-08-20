@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { getBolCandidateLines } from "@/db/queries";
 import { orderLines, type OrderLine } from "@/db/schema";
 import { evaluateBolMatch, resolveBolLine, type BolMatchedBy } from "./bol-match";
+import { convertBuyPriceToIls } from "./fx-apply";
 import { applyLineFields } from "./line-fields";
 import { normalizeCarrierStatus } from "./shipment-status";
 import type { BolMatchInput } from "./validation";
@@ -29,10 +30,14 @@ export interface BolWriteSummary {
  *
  * This is the *only* place a tracking number is written automatically. Both
  * doors in — POST /api/bol/matches and the `bol_submit_matches` MCP tool — call
- * it with matches already validated by `bolMatchInput`, because filling `bol`
- * turns a line green ("הגיע"): two code paths writing that field by two sets of
- * rules is how an unattended run ends up marking a shipment as arrived when it
- * is not.
+ * it with matches already validated by `bolMatchInput`: two code paths writing
+ * that field by two sets of rules is how an unattended run ends up overwriting a
+ * number a human had corrected.
+ *
+ * Filling `bol` no longer marks a line as arrived — it colours the row "במשלוח",
+ * and only a carrier-confirmed `shipment_status = 'delivered'` turns it green.
+ * Where that delivery status comes from is the other write path,
+ * `writeShipmentUpdates` in ./shipment-write.
  *
  * A match either names its `lineId` (taken from the worklist) or quotes what the
  * email said — `pn`, `poNumber`, `orderNumber` — and `resolveBolLine` finds the
@@ -115,6 +120,22 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
       }
     }
     if (match.etaDate) fields.shipmentEta = match.etaDate;
+
+    // A supplier's shipping confirmation sometimes carries the handover date and
+    // the unit price in one mail. Both are recorded here rather than waiting for
+    // the next status run, and the dollar price is converted through the same
+    // shared helper the status path uses, so one line's buy price cannot mean two
+    // different things depending on which door it came through.
+    if (match.deliveredAt) fields.deliveredAt = match.deliveredAt;
+    if (match.buyPriceUsd) fields.buyPriceUsd = match.buyPriceUsd;
+    Object.assign(
+      fields,
+      await convertBuyPriceToIls(
+        line,
+        match.buyPriceUsd ?? line.buyPriceUsd,
+        match.deliveredAt ?? line.deliveredAt,
+      ),
+    );
 
     await applyLineFields(
       line,

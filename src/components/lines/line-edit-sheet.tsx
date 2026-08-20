@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import type { LineRow } from "@/db/queries";
+import { formatDate } from "@/lib/format";
 import { MANUAL_STATUSES } from "@/lib/status";
 
 const AUTO = "__auto__";
@@ -36,8 +37,10 @@ function formFrom(line: LineRow): Record<string, string> {
     poNumber: line.poNumber ?? "",
     supplier: line.supplier ?? "",
     buyPrice: line.buyPrice ?? "",
+    buyPriceUsd: line.buyPriceUsd ?? "",
     shippingCost: line.shippingCost ?? "",
     contractDueDate: line.contractDueDate ?? "",
+    deliveredAt: line.deliveredAt ?? "",
     deliveryUpdate: line.deliveryUpdate ?? "",
     paymentMethod: line.paymentMethod ?? "",
     bol: line.bol ?? "",
@@ -119,12 +122,25 @@ export function LineEditSheet({
           </Field>
           <Field label="מחיר קנייה ליח' (₪)">
             <Input dir="ltr" inputMode="decimal" value={form.buyPrice ?? ""} onChange={(e) => set("buyPrice", e.target.value)} />
+            {line?.fxRate && (
+              <p className="text-xs text-muted-foreground">
+                הומר משער {line.fxRate}
+                {line.fxRateDate && ` מתאריך ${formatDate(line.fxRateDate)}`}. עריכה ידנית כאן
+                עוצרת המרה אוטומטית עתידית.
+              </p>
+            )}
+          </Field>
+          <Field label="מחיר קנייה ליח' ($)">
+            <Input dir="ltr" inputMode="decimal" value={form.buyPriceUsd ?? ""} onChange={(e) => set("buyPriceUsd", e.target.value)} />
           </Field>
           <Field label="עלות משלוח (₪)">
             <Input dir="ltr" inputMode="decimal" value={form.shippingCost ?? ""} onChange={(e) => set("shippingCost", e.target.value)} />
           </Field>
           <Field label="תאריך אספקה חוזי">
             <Input dir="ltr" type="date" value={form.contractDueDate ?? ""} onChange={(e) => set("contractDueDate", e.target.value)} />
+          </Field>
+          <Field label="תאריך מסירה בפועל">
+            <Input dir="ltr" type="date" value={form.deliveredAt ?? ""} onChange={(e) => set("deliveredAt", e.target.value)} />
           </Field>
           <Field label="שיטת תשלום">
             <Input value={form.paymentMethod ?? ""} onChange={(e) => set("paymentMethod", e.target.value)} />

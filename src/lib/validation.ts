@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseNumericString } from "./numeric";
+import { SHIPMENT_STATUSES } from "./shipment-status";
 import { MANUAL_STATUSES } from "./status";
 
 /** MoD orders: 10 digits starting with 444 → the customer is the purchasing-group number. */
@@ -70,6 +71,7 @@ export const manualFieldsInput = z.object({
   poNumber: optionalText,
   supplier: optionalText,
   buyPrice: optionalNumeric,
+  buyPriceUsd: optionalNumeric,
   shippingCost: optionalNumeric,
   deliveryUpdate: optionalText,
   paymentMethod: optionalText,
@@ -79,6 +81,7 @@ export const manualFieldsInput = z.object({
   qty: optionalNumeric,
   unitPrice: optionalNumeric,
   contractDueDate: optionalIsoDate,
+  deliveredAt: optionalIsoDate,
   manualStatus: z
     .enum(MANUAL_STATUSES)
     .nullish()
@@ -284,6 +287,13 @@ export const bolMatchInput = z
     statusText: optionalText,
     // Carrier's estimated arrival, when the email states one.
     etaDate: optionalIsoDate,
+    // Set only when the email says the goods were handed over, and then it is the
+    // date the carrier states — not the day the email was read. It is what picks
+    // the representative rate, so a wrong date is a wrong profit.
+    deliveredAt: optionalIsoDate,
+    // Unit purchase price as the purchase order quotes it: dollars, unconverted.
+    // The server converts; the agent must not do the arithmetic.
+    buyPriceUsd: optionalNumeric,
     sourceEmailId: optionalText,
     sourceQuote: optionalText,
     confidence: z
@@ -300,6 +310,48 @@ export const bolMatchInput = z
     message: "נדרש lineId או מפתח חיפוש (pn / poNumber / orderNumber)",
   });
 
+/**
+ * A status report for a shipment we already hold a bill of lading for.
+ *
+ * Deliberately a separate contract from `bolMatchInput`, because the two answer
+ * different questions and have opposite guards. Finding a tracking number is a
+ * once-per-line event that must never overwrite an existing value; checking where
+ * that shipment has got to happens twice a day, for as long as it takes, and is
+ * expected to overwrite the previous answer. Folding them together would mean
+ * relaxing the never-overwrite rule that protects `bol`.
+ *
+ * `lineId` is required here — a status update has nothing to search by, and
+ * guessing which line a carrier page refers to is not a thing worth doing.
+ */
+export const shipmentUpdateInput = z
+  .object({
+    lineId: z.number().int().positive(),
+    status: z
+      .enum(SHIPMENT_STATUSES)
+      .nullish()
+      .or(z.literal(""))
+      .transform((s) => (s ? s : null)),
+    /** The carrier's own wording, kept for a human to read and as a fallback classifier. */
+    statusText: optionalText,
+    deliveredAt: optionalIsoDate,
+    etaDate: optionalIsoDate,
+    carrier: optionalText,
+    buyPriceUsd: optionalNumeric,
+    /** Where this was read — a carrier tracking page, or the email id. */
+    sourceUrl: optionalText,
+    sourceEmailId: optionalText,
+    sourceQuote: optionalText,
+  })
+  .refine(
+    (m) =>
+      Boolean(m.status ?? m.statusText ?? m.deliveredAt ?? m.etaDate ?? m.buyPriceUsd ?? m.carrier),
+    {
+      message:
+        "אין מה לעדכן: נדרש status / statusText / deliveredAt / etaDate / buyPriceUsd / carrier",
+    },
+  );
+
 export type StagedPayload = z.infer<typeof stagedPayload>;
 export type OrderInput = z.infer<typeof orderInput>;
 export type BolMatchInput = z.infer<typeof bolMatchInput>;
+export type ShipmentUpdateInput = z.infer<typeof shipmentUpdateInput>;

@@ -72,13 +72,25 @@ export const orderLines = pgTable(
     // once a human typed or corrected it. Lets the UI flag unreviewed values.
     bolSource: text("bol_source"), // NULL | 'auto' | 'manual'
     bolConfidence: numeric("bol_confidence"), // 0..1, only meaningful for 'auto'
-    // Machine-readable shipment state, normalized from the carrier's wording by
-    // normalizeCarrierStatus(). `delivery_update` above keeps the raw text a human
-    // reads and lineStatus() keys off; this column exists so "still in the air" is a
-    // filter rather than substring-matching carrier prose.
+    // Machine-readable shipment state, normalized from what the carrier reports.
+    // `delivery_update` above keeps the raw text a human reads; this column is
+    // what decides colour — **it, and not `bol`, is what makes a row green.** A
+    // bill of lading only means a box left a warehouse.
     shipmentStatus: text("shipment_status"), // NULL (unknown) | see SHIPMENT_STATUSES
     shipmentStatusAt: timestamp("shipment_status_at", { withTimezone: true }),
     shipmentEta: date("shipment_eta"),
+    // The date the carrier says the goods were handed over. Distinct from
+    // shipment_status_at, which is when *we looked* — and it is this date, not
+    // ours, that picks the representative exchange rate below.
+    deliveredAt: date("delivered_at"),
+    // Purchase orders are priced in dollars while everything else in this table
+    // is shekels. buy_price stays the shekel figure the whole app already sums;
+    // these three record where it came from, so the number is auditable instead
+    // of being re-derived at display time with whatever rate is current.
+    buyPriceUsd: numeric("buy_price_usd"),
+    fxRate: numeric("fx_rate"), // ILS per 1 USD, as published
+    fxRateDate: date("fx_rate_date"), // the day that rate was published (see fx.ts)
+    fxRateSource: text("fx_rate_source"), // NULL | 'boi' | 'manual'
     notes: text("notes"),
     manualStatus: text("manual_status"), // NULL | 'הגיע' | 'סופק חלקי' | 'מאחר'
     isOpen: boolean("is_open").notNull().default(true),
@@ -93,8 +105,11 @@ export const orderLines = pgTable(
     index("order_lines_order_id_idx").on(t.orderId),
     // Open/archived split (getLines) and the BOL worklist's due-date ordering.
     index("order_lines_open_due_idx").on(t.isOpen, t.contractDueDate),
-    // The in-the-air filter on the bills-of-lading screen.
+    // The in-the-air filter on the bills-of-lading screen, and the twice-daily
+    // status worklist: open lines whose shipment is not settled yet, oldest
+    // observation first.
     index("order_lines_shipment_idx").on(t.isOpen, t.shipmentStatus),
+    index("order_lines_status_checked_idx").on(t.isOpen, t.shipmentStatusAt),
   ],
 );
 
@@ -259,6 +274,35 @@ export const auditLog = pgTable(
 );
 
 /**
+ * Representative exchange rates (שער יציג) as the Bank of Israel published them.
+ *
+ * A cache, not a source of truth: the rate that a line was actually converted at
+ * is snapshotted onto the line itself (order_lines.fx_rate). This table exists so
+ * a run does not re-ask the Bank of Israel for a day it already knows, and so a
+ * rate stays available after the fact even if the upstream series moves.
+ *
+ * One row per published day — the rate is published once per business day and not
+ * at all on weekends and holidays, which is why the lookup asks for "the last rate
+ * on or before" a date rather than for the date itself (see src/lib/fx.ts).
+ */
+export const fxRates = pgTable(
+  "fx_rates",
+  {
+    id: serial("id").primaryKey(),
+    currency: text("currency").notNull(), // 'USD'
+    rateDate: date("rate_date").notNull(), // the day the rate was published for
+    rate: numeric("rate").notNull(), // ILS per 1 unit of `currency`
+    source: text("source").notNull().default("boi"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("fx_rates_currency_date_unique").on(t.currency, t.rateDate),
+    // The lookup is always "newest rate at or before this date, for this currency".
+    index("fx_rates_currency_date_idx").on(t.currency, t.rateDate),
+  ],
+);
+
+/**
  * Failed login attempts, for the brute-force lock in src/lib/login-throttle.ts.
  * A row per failure; an IP's rows are cleared on a successful login and aged out
  * of the counting window otherwise, so the table stays small.
@@ -282,3 +326,4 @@ export type StagedOrder = typeof stagedOrders.$inferSelect;
 export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
 export type CourierInvoice = typeof courierInvoices.$inferSelect;
 export type CourierInvoiceAllocation = typeof courierInvoiceAllocations.$inferSelect;
+export type FxRate = typeof fxRates.$inferSelect;

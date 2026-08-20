@@ -17,6 +17,7 @@ function line(over: Partial<DashboardLine> & { lineId: number }): DashboardLine 
     bol: null,
     bolSource: null,
     bolConfidence: null,
+    shipmentStatus: null,
     deliveryUpdate: null,
     notes: null,
     manualStatus: null,
@@ -71,10 +72,12 @@ describe("buildDashboard — open pipeline", () => {
           line({ lineId: 2, manualStatus: "סופק חלקי" }),
           line({ lineId: 3, contractDueDate: "2026-07-01" }), // past due → late
           line({ lineId: 4, contractDueDate: "2026-08-01" }),
+          // Shipped but not handed over: blue, not green. The carrier decides green.
+          line({ lineId: 5, bol: "1Z999", shipmentStatus: "in_transit" }),
         ],
       }),
     );
-    expect(data.open.byStatus).toEqual({ green: 1, orange: 1, red: 1, neutral: 1 });
+    expect(data.open.byStatus).toEqual({ green: 1, blue: 1, orange: 1, red: 1, neutral: 1 });
   });
 
   it("adds money in agorot rather than in floats", () => {

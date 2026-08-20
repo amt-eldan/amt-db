@@ -172,6 +172,14 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
     toWrite.bolConfidence = null;
   }
 
+  // Same idea for the shekel buy price, and it matters more: the twice-daily run
+  // re-converts a price it converted itself, and would otherwise walk straight
+  // over a figure a person had just corrected. `fx_rate_source` is what says who
+  // owns the number, so typing one here has to claim it.
+  if (String(fields.buyPrice ?? "") !== String(existing.buyPrice ?? "")) {
+    toWrite.fxRateSource = fields.buyPrice ? "manual" : null;
+  }
+
   await applyLineFields(existing, toWrite);
   revalidateLinePages();
   return { ok: true, message: "השורה עודכנה" };

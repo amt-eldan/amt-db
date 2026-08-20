@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
+import { LateDeliveryBadge } from "@/components/lines/late-delivery-badge";
 import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import { ReceivedDate } from "@/components/lines/received-date";
 import {
@@ -47,8 +48,9 @@ import { ROW_TINTS, StatusDot, StatusLegend } from "./status-dot";
 const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: "all", label: "כל הסטטוסים" },
   { value: "red", label: "מאחר" },
-  { value: "orange", label: "סופק חלקי" },
-  { value: "green", label: "הגיע / סופק" },
+  { value: "orange", label: "סופק חלקי / תקלה" },
+  { value: "blue", label: "במשלוח" },
+  { value: "green", label: "נמסר" },
   { value: "neutral", label: "במסלול" },
 ];
 
@@ -282,7 +284,9 @@ export function OpenOrdersView({
                       <TableCell dir="ltr" className="text-end">{line.poNumber ?? "—"}</TableCell>
                       <TableCell>{line.supplier ?? "—"}</TableCell>
                       <TableCell>
-                        {/* Whitespace counts as no BOL, same as lineStatus treats it. */}
+                        {/* Whitespace counts as no BOL, same as lineStatus treats it.
+                            The badge stays neutral on purpose: a tracking number is a
+                            document, and only the carrier's "delivered" is good news. */}
                         {line.bol?.trim() ? (
                           <div className="flex flex-col items-start gap-0.5">
                             <span className="flex items-center gap-1">
@@ -298,6 +302,7 @@ export function OpenOrdersView({
                             {line.carrier && (
                               <span className="text-xs text-muted-foreground">{line.carrier}</span>
                             )}
+                            <LateDeliveryBadge line={line} />
                           </div>
                         ) : (
                           "—"
@@ -352,6 +357,12 @@ export function OpenOrdersView({
                           שטר מטען: <bdi dir="ltr">{line.bol}</bdi>
                           {line.carrier && ` · ${line.carrier}`}
                           {line.bolSource === "auto" && " · אוטומטי"}
+                        </span>
+                      )}
+                      {line.deliveredAt && (
+                        <span className="col-span-2 flex items-center gap-1.5">
+                          נמסר: <bdi dir="ltr">{formatDate(line.deliveredAt)}</bdi>
+                          <LateDeliveryBadge line={line} />
                         </span>
                       )}
                     </div>

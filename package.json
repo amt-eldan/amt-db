@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "import:xlsx": "tsx scripts/import-xlsx.ts"
+    "import:xlsx": "tsx scripts/import-xlsx.ts",
+    "fx:backfill": "tsx scripts/backfill-fx.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

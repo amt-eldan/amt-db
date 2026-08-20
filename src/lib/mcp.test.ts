@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpTool } from "./mcp";
 
-const { getBolWorklist, writeBolMatches } = vi.hoisted(() => ({
-  getBolWorklist: vi.fn(),
-  writeBolMatches: vi.fn(),
-}));
+const { getBolWorklist, getShipmentWorklist, writeBolMatches, writeShipmentUpdates } = vi.hoisted(
+  () => ({
+    getBolWorklist: vi.fn(),
+    getShipmentWorklist: vi.fn(),
+    writeBolMatches: vi.fn(),
+    writeShipmentUpdates: vi.fn(),
+  }),
+);
 
-vi.mock("@/db/queries", () => ({ getBolWorklist }));
+vi.mock("@/db/queries", () => ({ getBolWorklist, getShipmentWorklist }));
 vi.mock("./bol-write", () => ({ writeBolMatches }));
+vi.mock("./shipment-write", () => ({ writeShipmentUpdates }));
 
 const { handleMcpMessage } = await import("./mcp");
 
@@ -24,7 +29,9 @@ function toolPayload(response: Awaited<ReturnType<typeof handleMcpMessage>>) {
 
 beforeEach(() => {
   getBolWorklist.mockReset();
+  getShipmentWorklist.mockReset();
   writeBolMatches.mockReset();
+  writeShipmentUpdates.mockReset();
 });
 
 describe("initialize", () => {
@@ -75,9 +82,14 @@ describe("protocol plumbing", () => {
 });
 
 describe("tools/list", () => {
-  it("lists both tools with the schema generated from bolMatchInput", async () => {
+  it("lists all four tools with the schemas generated from their Zod schemas", async () => {
     const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
-    expect(tools.map((t) => t.name)).toEqual(["bol_worklist", "bol_submit_matches"]);
+    expect(tools.map((t) => t.name)).toEqual([
+      "bol_worklist",
+      "bol_submit_matches",
+      "shipment_worklist",
+      "shipment_update",
+    ]);
 
     const matches = tools[1].inputSchema.properties as { matches: { anyOf: [{ items: object }] } };
     // `bol` is the only required key: a match may name its lineId or, when the
@@ -91,6 +103,89 @@ describe("tools/list", () => {
     const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
     expect(tools[0].description).toContain("poNumber");
     expect(tools[0].description).toContain("supplier");
+  });
+
+  it("generates shipment_update's schema from shipmentUpdateInput", async () => {
+    const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
+    const updates = tools[3].inputSchema.properties as { updates: { anyOf: [{ items: object }] } };
+    const item = updates.updates.anyOf[0].items as { required: string[]; properties: object };
+    // lineId is the only required key: a status report has nothing to search by.
+    expect(item.required).toEqual(["lineId"]);
+    expect(Object.keys(item.properties)).toContain("deliveredAt");
+    expect(Object.keys(item.properties)).toContain("buyPriceUsd");
+  });
+
+  // The rule the whole change turns on, stated where the agent actually reads it.
+  it("tells the agent a bill of lading is not a delivery", async () => {
+    const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
+    expect(tools[3].description).toContain("delivered");
+    expect(tools[3].description).toContain("green");
+    const instructions = (await rpc("initialize", {}))!.result as { instructions: string };
+    expect(instructions.instructions).toContain("שטר מטען הוא לא מסירה");
+  });
+});
+
+describe("shipment_worklist", () => {
+  it("returns the worklist with its count", async () => {
+    getShipmentWorklist.mockResolvedValue([{ lineId: 7, bol: "1Z999", carrier: "UPS" }]);
+    const { text } = toolPayload(await call("shipment_worklist"));
+    expect(JSON.parse(text)).toEqual({
+      ok: true,
+      count: 1,
+      lines: [{ lineId: 7, bol: "1Z999", carrier: "UPS" }],
+    });
+  });
+
+  it("clamps the limit it is given, and passes none when it is not a number", async () => {
+    getShipmentWorklist.mockResolvedValue([]);
+    await call("shipment_worklist", { limit: 9000 });
+    expect(getShipmentWorklist).toHaveBeenCalledWith(500);
+    await call("shipment_worklist", { limit: "lots" });
+    expect(getShipmentWorklist).toHaveBeenLastCalledWith(undefined);
+  });
+});
+
+describe("shipment_update", () => {
+  it("accepts one update or an array of them", async () => {
+    writeShipmentUpdates.mockResolvedValue({ ok: true, written: 1, unchanged: 0, skipped: 0, results: [] });
+    await call("shipment_update", { updates: { lineId: 7, status: "delivered", deliveredAt: "2026-08-12" } });
+    expect(writeShipmentUpdates).toHaveBeenCalledWith([
+      expect.objectContaining({ lineId: 7, status: "delivered", deliveredAt: "2026-08-12" }),
+    ]);
+
+    await call("shipment_update", {
+      updates: [
+        { lineId: 7, status: "in_transit" },
+        { lineId: 8, statusText: "Delivered" },
+      ],
+    });
+    expect(writeShipmentUpdates).toHaveBeenLastCalledWith([
+      expect.objectContaining({ lineId: 7 }),
+      expect.objectContaining({ lineId: 8 }),
+    ]);
+  });
+
+  it("rejects the whole batch rather than writing half of it", async () => {
+    const { isError, text } = toolPayload(
+      await call("shipment_update", {
+        updates: [{ lineId: 7, status: "delivered" }, { lineId: 8, status: "teleported" }],
+      }),
+    );
+    expect(isError).toBe(true);
+    expect(text).toContain("#2");
+    expect(writeShipmentUpdates).not.toHaveBeenCalled();
+  });
+
+  it("refuses an update that says nothing", async () => {
+    const { isError } = toolPayload(await call("shipment_update", { updates: { lineId: 7 } }));
+    expect(isError).toBe(true);
+    expect(writeShipmentUpdates).not.toHaveBeenCalled();
+  });
+
+  it("names the missing field when `updates` is absent", async () => {
+    const { isError, text } = toolPayload(await call("shipment_update", {}));
+    expect(isError).toBe(true);
+    expect(text).toContain("updates");
   });
 });
 
