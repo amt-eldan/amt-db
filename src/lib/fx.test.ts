@@ -126,3 +126,75 @@ describe("convertToIls", () => {
     expect(convertToIls(1, 3.005)).toBe(3.01);
   });
 });
+
+// Verbatim responses from the Bank of Israel, captured 2026-08-23. The fixtures
+// above were written before the service was reachable and guessed at the header;
+// these are the real thing, and they are what the parser is actually held to.
+describe("the responses the Bank of Israel really returns", () => {
+  const REAL_USD_CSV = [
+    "SERIES_CODE,FREQ,BASE_CURRENCY,COUNTER_CURRENCY,UNIT_MEASURE,DATA_TYPE,DATA_SOURCE,TIME_COLLECT,CONF_STATUS,PUB_WEBSITE,UNIT_MULT,COMMENTS,TIME_PERIOD,OBS_VALUE,RELEASE_STATUS",
+    "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-08-06,3.013,YP",
+    "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-08-07,3.006,YP",
+    "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-08-10,2.998,YP",
+    "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-08-11,3.005,YP",
+    "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-08-12,2.991,YP",
+  ].join("\n");
+
+  it("reads the real SDMX-CSV header, twelve key columns and all", () => {
+    expect(parseBoiSeriesCsv(REAL_USD_CSV)).toEqual([
+      { date: "2026-08-06", rate: 3.013 },
+      { date: "2026-08-07", rate: 3.006 },
+      { date: "2026-08-10", rate: 2.998 },
+      { date: "2026-08-11", rate: 3.005 },
+      { date: "2026-08-12", rate: 2.991 },
+    ]);
+  });
+
+  // 08-08 and 08-09 are simply absent from the real series. This is the gap the
+  // whole on-or-before lookup exists for: goods delivered then convert at the 7th's
+  // rate, and the row records that it was the 7th's.
+  it("converts a delivery made on a day with no published rate", () => {
+    const series = parseBoiSeriesCsv(REAL_USD_CSV);
+    expect(pickRateOnOrBefore(series, "2026-08-09")).toEqual({
+      date: "2026-08-07",
+      rate: 3.006,
+    });
+    expect(pickRateOnOrBefore(series, "2026-08-05")).toBeNull();
+  });
+
+  it("divides out UNIT_MULT: the yen series quotes 100 yen, not one", () => {
+    const jpy = [
+      "SERIES_CODE,FREQ,BASE_CURRENCY,COUNTER_CURRENCY,UNIT_MEASURE,DATA_TYPE,DATA_SOURCE,TIME_COLLECT,CONF_STATUS,PUB_WEBSITE,UNIT_MULT,COMMENTS,TIME_PERIOD,OBS_VALUE,RELEASE_STATUS",
+      "RER_JPY_ILS,D,JPY,ILS,ILS,OF00,BOI_MRKT,V,F,Y,2,,2026-08-21,1.8873,YP",
+    ].join("\n");
+    expect(parseBoiSeriesCsv(jpy)).toEqual([{ date: "2026-08-21", rate: 0.018873 }]);
+  });
+
+  it("reads the real GetExchangeRate payload, unit field included", () => {
+    // Note the date: fetched on the 23rd, and the rate is still the 21st's.
+    expect(
+      parseBoiCurrentRate({
+        key: "USD",
+        currentExchangeRate: 2.991,
+        currentChange: -0.0334224598930481283422459900,
+        unit: 1,
+        lastUpdate: "2026-08-21T09:23:04.0603079Z",
+      }),
+    ).toEqual({ date: "2026-08-21", rate: 2.991 });
+
+    expect(
+      parseBoiCurrentRate({
+        key: "JPY",
+        currentExchangeRate: 1.8873,
+        unit: 100,
+        lastUpdate: "2026-08-21T09:23:04.0603079Z",
+      }),
+    ).toEqual({ date: "2026-08-21", rate: 0.018873 });
+  });
+
+  it("treats a payload with no unit as per-one rather than refusing it", () => {
+    expect(
+      parseBoiCurrentRate({ currentExchangeRate: 3.5017, lastUpdate: "2026-08-21T09:23:04Z" }),
+    ).toEqual({ date: "2026-08-21", rate: 3.5017 });
+  });
+});

@@ -21,12 +21,18 @@ export interface FxObservation {
   rate: number;
 }
 
-/** The new series database (SDMX). Series keys look like RER_USD_ILS. */
+/**
+ * The new series database (SDMX). Series keys look like RER_USD_ILS.
+ *
+ * The `gov.il` host is the one the Bank of Israel's own documentation links to.
+ * `edge.boi.org.il` answers identically, so this is a naming preference and not a
+ * fallback worth coding.
+ */
 export const BOI_SERIES_BASE =
-  "https://edge.boi.org.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0";
+  "https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0";
 
 /** The small public endpoint. Current rate only — used when the series is unreachable. */
-export const BOI_CURRENT_BASE = "https://boi.org.il/PublicApi/GetExchangeRate";
+export const BOI_CURRENT_BASE = "https://www.boi.org.il/PublicApi/GetExchangeRate";
 
 export function boiSeriesUrl(currency: string, from: string, to: string): string {
   const series = `RER_${currency.toUpperCase()}_ILS`;
@@ -35,6 +41,20 @@ export function boiSeriesUrl(currency: string, from: string, to: string): string
 
 export function boiCurrentUrl(currency: string): string {
   return `${BOI_CURRENT_BASE}?key=${currency.toUpperCase()}`;
+}
+
+/**
+ * Both endpoints quote some currencies per 100 or per 10 units rather than per one:
+ * the yen comes back as 1.8873 shekels, which is the price of **100** yen. The
+ * series says so in UNIT_MULT (a power of ten — 2 for the yen), the small endpoint
+ * in a plain `unit` field (100). Left alone, a yen rate would be stored a hundred
+ * times too large, so both parsers divide it out and FxObservation.rate keeps its
+ * promise of shekels per one unit. The dollar and the euro are both scale 1, which
+ * is exactly why this is easy to miss.
+ */
+function unitScaleFromMult(raw: string | undefined): number {
+  const mult = Number(String(raw ?? "").replace(/["\s]/g, ""));
+  return Number.isFinite(mult) ? 10 ** mult : 1;
 }
 
 /**
@@ -53,30 +73,39 @@ export function parseBoiSeriesCsv(text: string): FxObservation[] {
   const header = splitCsvRow(lines[0]).map((h) => h.trim().toUpperCase().replace(/^"|"$/g, ""));
   const timeIdx = header.findIndex((h) => h === "TIME_PERIOD" || h === "TIME");
   const valueIdx = header.findIndex((h) => h === "OBS_VALUE" || h === "VALUE");
+  const multIdx = header.findIndex((h) => h === "UNIT_MULT");
   if (timeIdx === -1 || valueIdx === -1) return [];
 
   const out: FxObservation[] = [];
   for (const raw of lines.slice(1)) {
     const cells = splitCsvRow(raw);
     const date = normalizeIsoDate(cells[timeIdx]);
-    const rate = Number(String(cells[valueIdx] ?? "").replace(/["\s,]/g, ""));
-    if (!date || !Number.isFinite(rate) || rate <= 0) continue;
-    out.push({ date, rate });
+    const quoted = Number(String(cells[valueIdx] ?? "").replace(/["\s,]/g, ""));
+    if (!date || !Number.isFinite(quoted) || quoted <= 0) continue;
+    const scale = multIdx === -1 ? 1 : unitScaleFromMult(cells[multIdx]);
+    out.push({ date, rate: quoted / scale });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**
- * The single-rate JSON endpoint: `{ key, currentExchangeRate, currentChange, lastUpdate }`.
- * `lastUpdate` is a full timestamp; its date part is the day the rate belongs to.
+ * The single-rate JSON endpoint:
+ * `{ key, currentExchangeRate, currentChange, unit, lastUpdate }`.
+ *
+ * `lastUpdate` is a full timestamp and its date part is the day the rate belongs to
+ * — note that this is the last **publication** day, so on a Sunday it still reads
+ * Thursday, which is the answer we want. `unit` is divided out (see unitScale
+ * above); a payload without it is treated as per-one.
  */
 export function parseBoiCurrentRate(payload: unknown): FxObservation | null {
   if (typeof payload !== "object" || payload === null) return null;
   const o = payload as Record<string, unknown>;
-  const rate = Number(o.currentExchangeRate);
+  const quoted = Number(o.currentExchangeRate);
   const date = normalizeIsoDate(typeof o.lastUpdate === "string" ? o.lastUpdate : null);
-  if (!Number.isFinite(rate) || rate <= 0 || !date) return null;
-  return { date, rate };
+  if (!Number.isFinite(quoted) || quoted <= 0 || !date) return null;
+  const unit = Number(o.unit);
+  const scale = Number.isFinite(unit) && unit > 0 ? unit : 1;
+  return { date, rate: quoted / scale };
 }
 
 /**

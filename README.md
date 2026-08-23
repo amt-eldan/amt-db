@@ -556,15 +556,33 @@ UPS. זה נכון גם כשהמספר נכתב אוטומטית ע"י agent ה�
 `fx_rate_date` אומר שזה היה חמישי. **שער שלא נמצא נשאר `NULL`**, הרווח מוצג "ממתין", ואף
 פעם לא מנוחש — מספר שגוי מתחזה לרווח, ומספר חסר לא.
 
-מקורות (שניהם ציבוריים, בלי מפתח):
+מקורות (שניהם ציבוריים, בלי מפתח, ושניהם נבדקו מול תשובה אמיתית ב-23/08/2026):
 
 ```
 # סדרה היסטורית — זה מה שמשמש להמרה
-https://edge.boi.org.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0/RER_USD_ILS?format=csv&startPeriod=…&endPeriod=…
+https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0/RER_USD_ILS?format=csv&startPeriod=…&endPeriod=…
 
 # שער נוכחי בלבד — fallback
-https://boi.org.il/PublicApi/GetExchangeRate?key=USD
+https://www.boi.org.il/PublicApi/GetExchangeRate?key=USD
 ```
+
+שלוש עובדות שנמדדו ולא נוחשו, וכל אחת מהן הייתה יכולה לשבור את ההמרה בשקט:
+
+1. **ה-CSV מגיע עם שתים-עשרה עמודות מפתח לפני התצפית** (`SERIES_CODE,FREQ,BASE_CURRENCY,…,UNIT_MULT,COMMENTS,TIME_PERIOD,OBS_VALUE,RELEASE_STATUS`).
+   לכן הפרסר קורא `TIME_PERIOD` ו-`OBS_VALUE` **לפי שם בכותרת ולא לפי מקום**.
+2. **`UNIT_MULT` (בסדרה) ו-`unit` (ב-PublicApi) הם חזקה של עשר ומספר יחידות:** היֶן מצוטט
+   1.8873 ש"ח, וזה המחיר של **100** יֶן (`UNIT_MULT=2`, `unit=100`). שני הפרסרים מחלקים בזה.
+   הדולר והאירו שניהם ביחידה אחת — וזה בדיוק למה אפשר לפספס את זה.
+3. **`lastUpdate` הוא יום הפרסום האחרון ולא היום.** קריאה ב-23/08 (יום ראשון) מחזירה את
+   השער של 21/08, וזו התשובה הנכונה.
+
+שני ה-hosts (`edge.boi.gov.il` ו-`edge.boi.org.il`, וכן `www.boi.org.il` ו-`boi.org.il`)
+עונים זהה, ושמות טווח התאריכים עובדים גם `startPeriod` וגם `startperiod`. נבחרו הצורות
+שבנק ישראל מקשר אליהן בתיעוד שלו.
+
+> **בפיתוח מקומי מאחורי proxy:** ה-`fetch` המובנה של Node מתעלם מ-`HTTPS_PROXY`. אם ההמרה
+> מחזירה `NULL` מקומית בלי סיבה, זה זה — להריץ עם `NODE_USE_ENV_PROXY=1`. בפרודקשן (Vercel)
+> אין proxy והבעיה לא קיימת.
 
 השערים נשמרים בטבלת `fx_rates` (שורה ליום פרסום), כך שחודש של מסירות עולה קריאות בודדות.
 כתיבה לקאש היא `on conflict do nothing` בכוונה: שער של יום שכבר ידוע לא משתנה מתחתנו, כי
