@@ -18,8 +18,18 @@ import { Switch } from "@/components/ui/switch";
 import type { LineRow } from "@/db/queries";
 import { formatDate, formatILS, formatMonth } from "@/lib/format";
 import { lineProfit, lineValue } from "@/lib/profit";
+import {
+  SHIPMENT_STATUS_LABELS,
+  asShipmentStatus,
+} from "@/lib/shipment-status";
 import { cn } from "@/lib/utils";
 import { MonthlySummaryTable, type MonthlyComputedRow } from "./monthly-summary-table";
+
+/** The Hebrew label for the export; blank rather than a raw enum for an unknown status. */
+function shipmentStatusLabel(status: string | null): string {
+  const known = asShipmentStatus(status);
+  return known ? SHIPMENT_STATUS_LABELS[known] : "";
+}
 
 export function MonthlyView({
   rows,
@@ -91,9 +101,14 @@ export function MonthlyView({
   }, [computed]);
 
   function exportCsv() {
+    // Everything the old order-tracking spreadsheet carried, including the two
+    // columns this export used to drop: the purchase order the search runs on,
+    // and the dollar price with the rate it was converted at.
     const headers = [
-      "לקוח", "מס' הזמנה", "תאריך קבלת ההזמנה", "מקור התאריך", "סטטוס", "P/N", "ספק", "כמות",
-      "מחיר מכירה ליח'", "מחיר קנייה ליח'", "משלוח", "סך מכירה", "רווח", "שטר מטען", "הערות",
+      "לקוח", "מס' הזמנה", "תאריך קבלת ההזמנה", "מקור התאריך", "סטטוס", "P/N", "ספק",
+      "הזמנת רכש", "כמות", "מחיר מכירה ליח'", "מחיר קנייה ליח' (₪)", "מחיר קנייה ליח' ($)",
+      "שער יציג", "תאריך השער", "משלוח", "סך מכירה", "רווח",
+      "שטר מטען", "בלדר", "סטטוס משלוח", "תאריך מסירה", "הערות",
     ];
     const escape = (v: string | number | null | undefined) => {
       const s = v === null || v === undefined ? "" : String(v);
@@ -108,13 +123,20 @@ export function MonthlyView({
         row.isOpen ? "פתוחה" : "סגורה",
         row.pn,
         row.supplier,
+        row.poNumber,
         row.qty,
         row.unitPrice,
         row.buyPrice,
+        row.buyPriceUsd,
+        row.fxRate,
+        row.fxRateDate,
         row.shippingCost,
         row.sale?.toFixed(2),
         row.profit === null ? "ממתין" : row.profit.toFixed(2),
         row.bol,
+        row.carrier,
+        shipmentStatusLabel(row.shipmentStatus),
+        row.deliveredAt,
         row.notes,
       ]
         .map(escape)

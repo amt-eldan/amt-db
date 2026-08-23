@@ -10,9 +10,26 @@ const numberFormatter = new Intl.NumberFormat("he-IL", {
   maximumFractionDigits: 2,
 });
 
+/**
+ * Dollars, for the one figure in this app that is not shekels: the purchase price
+ * as the purchase order quotes it. Everything summed anywhere is still shekels —
+ * this exists so the original amount can be *shown* next to the converted one,
+ * not so amounts in two currencies can be mixed.
+ */
+const usdFormatter = new Intl.NumberFormat("he-IL", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
 export function formatILS(value: number | string | null | undefined): string {
   const n = parseNumeric(value);
   return n === null ? "—" : ilsFormatter.format(n);
+}
+
+export function formatUSD(value: number | string | null | undefined): string {
+  const n = parseNumeric(value);
+  return n === null ? "—" : usdFormatter.format(n);
 }
 
 export function formatNumber(value: number | string | null | undefined): string {

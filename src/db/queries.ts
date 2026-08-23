@@ -52,6 +52,11 @@ export interface LineRow {
   shipmentStatus: string | null;
   shipmentStatusAt: Date | null;
   shipmentEta: string | null;
+  deliveredAt: string | null;
+  buyPriceUsd: string | null;
+  fxRate: string | null;
+  fxRateDate: string | null;
+  fxRateSource: string | null;
   notes: string | null;
   manualStatus: string | null;
   isOpen: boolean;
@@ -103,6 +108,11 @@ const lineColumns = {
   shipmentStatus: orderLines.shipmentStatus,
   shipmentStatusAt: orderLines.shipmentStatusAt,
   shipmentEta: orderLines.shipmentEta,
+  deliveredAt: orderLines.deliveredAt,
+  buyPriceUsd: orderLines.buyPriceUsd,
+  fxRate: orderLines.fxRate,
+  fxRateDate: orderLines.fxRateDate,
+  fxRateSource: orderLines.fxRateSource,
   notes: orderLines.notes,
   manualStatus: orderLines.manualStatus,
   isOpen: orderLines.isOpen,
@@ -148,7 +158,13 @@ export async function getLineSet(archived: boolean): Promise<LineRow[]> {
 /** The columns lineStatus() needs, plus the customer, for the header stat cards. */
 export type OpenStatusRow = Pick<
   LineRow,
-  "customerName" | "manualStatus" | "bol" | "deliveryUpdate" | "notes" | "contractDueDate"
+  | "customerName"
+  | "manualStatus"
+  | "bol"
+  | "shipmentStatus"
+  | "deliveryUpdate"
+  | "notes"
+  | "contractDueDate"
 >;
 
 /**
@@ -156,7 +172,7 @@ export type OpenStatusRow = Pick<
  *
  * The "late" count depends on lineStatus(), whose priority rules must stay in one
  * place rather than being reimplemented in SQL — so the rows are still counted in
- * JS, but six columns of them instead of all twenty-five. Queried separately from
+ * JS, but seven columns of them instead of all twenty-five. Queried separately from
  * getLines so the cards keep showing open-line figures while the archive is on
  * screen.
  */
@@ -166,6 +182,7 @@ export async function getOpenStatusRows(): Promise<OpenStatusRow[]> {
       customerName: customers.name,
       manualStatus: orderLines.manualStatus,
       bol: orderLines.bol,
+      shipmentStatus: orderLines.shipmentStatus,
       deliveryUpdate: orderLines.deliveryUpdate,
       notes: orderLines.notes,
       contractDueDate: orderLines.contractDueDate,
@@ -224,6 +241,8 @@ export interface BolWorklistRow {
   poNumber: string | null;
   supplier: string | null;
   contractDueDate: string | null;
+  /** Already-known dollar buy price, so the agent looks for one only when it is missing. */
+  buyPriceUsd: string | null;
 }
 
 /**
@@ -247,6 +266,7 @@ export async function getBolWorklist(): Promise<BolWorklistRow[]> {
       poNumber: orderLines.poNumber,
       supplier: orderLines.supplier,
       contractDueDate: orderLines.contractDueDate,
+      buyPriceUsd: orderLines.buyPriceUsd,
     })
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
@@ -270,6 +290,71 @@ export async function getBolWorklist(): Promise<BolWorklistRow[]> {
  * resolver needs to see them to answer "that line is closed" or "that number is
  * already there" instead of the useless "no match".
  */
+export interface ShipmentWorklistRow {
+  lineId: number;
+  bol: string;
+  carrier: string | null;
+  orderNumber: string;
+  customer: string;
+  pn: string | null;
+  poNumber: string | null;
+  supplier: string | null;
+  contractDueDate: string | null;
+  shipmentStatus: string | null;
+  shipmentStatusAt: Date | null;
+  shipmentEta: string | null;
+  deliveredAt: string | null;
+  buyPriceUsd: string | null;
+}
+
+/**
+ * The other half of the tracking loop: open lines that **have** a bill of lading
+ * and whose shipment is not settled yet.
+ *
+ * getBolWorklist above answers "which lines still need a tracking number". This
+ * one answers "which of the numbers we hold has not arrived yet" — the question
+ * that has to be re-asked every run, and the one nothing used to ask. That gap is
+ * why a bill of lading ended up standing in for arrival: no update ever came, so
+ * the document was the only signal there was.
+ *
+ * Oldest observation first (`shipment_status_at nulls first`), so a run that only
+ * gets through part of the list always spends its budget on the most stale rows —
+ * and a shipment we have never checked outranks one checked this morning.
+ */
+export async function getShipmentWorklist(limit = 200): Promise<ShipmentWorklistRow[]> {
+  return db
+    .select({
+      lineId: orderLines.id,
+      bol: sql<string>`${orderLines.bol}`,
+      carrier: orderLines.carrier,
+      orderNumber: orders.orderNumber,
+      customer: customers.name,
+      pn: orderLines.pn,
+      poNumber: orderLines.poNumber,
+      supplier: orderLines.supplier,
+      contractDueDate: orderLines.contractDueDate,
+      shipmentStatus: orderLines.shipmentStatus,
+      shipmentStatusAt: orderLines.shipmentStatusAt,
+      shipmentEta: orderLines.shipmentEta,
+      deliveredAt: orderLines.deliveredAt,
+      buyPriceUsd: orderLines.buyPriceUsd,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(
+      and(
+        eq(orderLines.isOpen, true),
+        sql`coalesce(trim(${orderLines.bol}), '') <> ''`,
+        sql`coalesce(${orderLines.shipmentStatus}, '') <> 'delivered'`,
+        // A line a human already closed by hand needs no more carrier lookups.
+        sql`${orderLines.manualStatus} is distinct from 'הגיע'`,
+      ),
+    )
+    .orderBy(sql`${orderLines.shipmentStatusAt} asc nulls first`, asc(orderLines.id))
+    .limit(limit);
+}
+
 export async function getBolCandidateLines(): Promise<BolCandidateLine[]> {
   return db
     .select({

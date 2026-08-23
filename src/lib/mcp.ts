@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { getBolWorklist } from "@/db/queries";
+import { getBolWorklist, getShipmentWorklist } from "@/db/queries";
 import { writeBolMatches } from "./bol-write";
-import { bolMatchInput } from "./validation";
+import { writeShipmentUpdates } from "./shipment-write";
+import { bolMatchInput, shipmentUpdateInput } from "./validation";
 
 /**
  * A hand-rolled MCP server (JSON-RPC 2.0 over Streamable HTTP, stateless).
@@ -30,13 +31,23 @@ const SERVER_INFO = {
  * Shown to the agent right after connecting. This is where the workflow lives,
  * so a scheduled task does not have to be told it again in every prompt.
  */
-const INSTRUCTIONS = `שרת שטרי המטען של AMT. סדר העבודה:
+const INSTRUCTIONS = `שרת שטרי המטען של AMT. שתי משימות בכל הרצה, בסדר הזה:
 
-1. קרא ל-bol_worklist כדי לקבל את השורות הפתוחות שחסר בהן שטר מטען. כל שורה מגיעה עם מפתחות החיפוש שלה.
-2. חפש בתיבת המייל לפי המפתחות, לפי סדר העדיפות: poNumber (הזמנת הרכש שלנו לספק — האות החזק ביותר) ← pn (מק"ט היצרן) ← orderNumber (משני, הספק לרוב לא מכיר אותו) ← supplier (אישוש בלבד).
-3. החזר את מה שמצאת ב-bol_submit_matches, עם ה-lineId שהתקבל ב-worklist. מייל אחד שמכסה כמה פריטים → כמה התאמות, אחת לכל lineId, עם אותו sourceEmailId.
+**א. איפה נמצאים המשלוחים שכבר יש להם שטר מטען**
+1. קרא ל-shipment_worklist. כל שורה מגיעה עם bol, carrier, ומתי נבדקה לאחרונה (הישנות ראשונות).
+2. לכל שטר מטען — היכנס לאתר המעקב של הספקית (FedEx / DHL / UPS) וקרא את הסטטוס האמיתי.
+3. דווח ב-shipment_update: status, ו-deliveredAt **רק** כשהספקית אומרת שהמשלוח נמסר ונוקבת בתאריך. sourceUrl = הדף שקראת.
 
-אל תנחש: התאמה שאינך בטוח בה — החזר אותה עם confidence נמוך (מתחת ל-0.5) או אל תחזיר אותה בכלל. השרת מדלג על התאמה עמומה ומדווח עליה, ולעולם לא דורס שטר מטען שכבר קיים.`;
+**חשוב מאוד: שטר מטען הוא לא מסירה.** שורה נצבעת ירוק רק כשמגיע status=delivered מהספקית. אל תדווח delivered על "out for delivery" או "arrived at facility".
+
+**ב. שטרי מטען חדשים בתיבת המייל**
+4. קרא ל-bol_worklist — השורות הפתוחות שחסר בהן שטר מטען, כל אחת עם מפתחות החיפוש שלה.
+5. חפש במייל לפי סדר העדיפות: poNumber (הזמנת הרכש שלנו לספק — האות החזק ביותר) ← pn (מק"ט היצרן) ← orderNumber (משני, הספק לרוב לא מכיר אותו) ← supplier (אישוש בלבד).
+6. דווח ב-bol_submit_matches עם ה-lineId מה-worklist. מייל אחד שמכסה כמה פריטים → כמה התאמות, אחת לכל lineId, עם אותו sourceEmailId.
+
+**מחיר קנייה:** הזמנות הרכש נקובות בדולרים. אם המייל או ההזמנה נוקבים במחיר קנייה ליחידה — שלח אותו כ-buyPriceUsd, **בדולרים ובלי להמיר**. השרת מביא את השער היציג של בנק ישראל לתאריך המסירה וממיר בעצמו, ושומר את השער שבו המיר. אל תחשב שערים ואל תמיר סכומים.
+
+אל תנחש: התאמה שאינך בטוח בה — החזר אותה עם confidence נמוך (מתחת ל-0.5) או אל תחזיר אותה בכלל. השרת מדלג על התאמה עמומה ומדווח עליה, ולעולם לא דורס שטר מטען שכבר קיים ולא דורס מה שאדם הזין ביד.`;
 
 export interface McpTool {
   name: string;
@@ -46,17 +57,28 @@ export interface McpTool {
 }
 
 /**
- * The match schema the agent sees is generated from `bolMatchInput` itself —
- * the same Zod schema that validates the call — so the advertised contract
- * cannot drift from the enforced one.
+ * Every schema the agent sees is generated from the very Zod schema that
+ * validates the call, so the advertised contract cannot drift from the enforced
+ * one.
  */
-function matchJsonSchema(): Record<string, unknown> {
-  const schema = z.toJSONSchema(bolMatchInput, {
+function jsonSchemaOf(schema: z.ZodType): Record<string, unknown> {
+  const json = z.toJSONSchema(schema, {
     io: "input",
     unrepresentable: "any",
   }) as Record<string, unknown>;
-  delete schema.$schema;
-  return schema;
+  delete json.$schema;
+  return json;
+}
+
+const matchJsonSchema = () => jsonSchemaOf(bolMatchInput);
+const shipmentUpdateJsonSchema = () => jsonSchemaOf(shipmentUpdateInput);
+
+/** One item or an array of them, the shape both write tools accept. */
+function oneOrMany(itemSchema: Record<string, unknown>, description: string) {
+  return {
+    description,
+    anyOf: [{ type: "array", minItems: 1, items: itemSchema }, itemSchema],
+  };
 }
 
 export const TOOLS: McpTool[] = [
@@ -86,15 +108,52 @@ export const TOOLS: McpTool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        matches: {
-          description: "One match, or an array of them.",
-          anyOf: [
-            { type: "array", minItems: 1, items: matchJsonSchema() },
-            matchJsonSchema(),
-          ],
-        },
+        matches: oneOrMany(matchJsonSchema(), "One match, or an array of them."),
       },
       required: ["matches"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "shipment_worklist",
+    title: "משלוחים שצריך לבדוק איפה הם",
+    description:
+      "Returns the open lines that DO have a bill of lading and whose shipment has not been confirmed delivered yet — the shipments to go and check on. " +
+      "Least-recently-checked first (a shipment never checked comes before one checked this morning), so a partial run always spends itself on the most stale rows. " +
+      "Each row carries `bol` and `carrier` to look up, and `shipmentStatusAt` so you can see when it was last read. " +
+      "This is the counterpart of bol_worklist: that one asks which lines still need a tracking number, this one asks where the numbers we hold have got to. " +
+      "Lines already delivered, closed, or marked arrived by hand are not returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 500,
+          description: "How many rows to return. Default 200.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "shipment_update",
+    title: "עדכון סטטוס משלוח",
+    description:
+      "Reports where a shipment has got to, for a line that already holds a bill of lading. Send one object or an array under `updates`; `lineId` is required and comes from shipment_worklist. " +
+      "`status` is the normalized state — 'in_transit' | 'delivered' | 'exception' — and is preferred over prose; send the carrier's own wording in `statusText` too and it is kept for a human to read. " +
+      "**'delivered' is the only thing that turns a row green, so send it only when the carrier says the goods were handed over** — not for 'out for delivery', not for 'arrived at facility'. " +
+      "Send `deliveredAt` (yyyy-mm-dd) with the date the CARRIER states, never today's date: it is what dates the exchange rate, so a wrong date is a wrong profit figure. " +
+      "`buyPriceUsd` is the unit purchase price in dollars, unconverted — the server fetches the Bank of Israel representative rate for the delivery date, converts, and records the rate it used. Do not convert currency yourself. " +
+      "Include `sourceUrl` (the tracking page you read) so the write is reviewable. " +
+      "The write is guarded: it never touches `bol`, never overwrites a delivery note a human wrote, never overwrites a buy price a human entered, and writes nothing at all when nothing changed — so running it twice a day is safe. " +
+      "Returns { ok, written, unchanged, skipped, results }, where each written result lists which fields actually moved.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        updates: oneOrMany(shipmentUpdateJsonSchema(), "One update, or an array of them."),
+      },
+      required: ["updates"],
       additionalProperties: false,
     },
   },
@@ -218,30 +277,57 @@ async function callTool(id: JsonRpcId, params: unknown): Promise<JsonRpcResponse
   }
 
   if (name === "bol_submit_matches") {
-    const raw = (args as { matches?: unknown } | undefined)?.matches;
-    if (raw === undefined || raw === null) {
-      return ok(id, toolError('חסר השדה "matches".'));
-    }
-
     // One match or many, exactly like POST /api/bol/matches accepts.
-    const items = Array.isArray(raw) ? raw : [raw];
-    if (items.length === 0) {
-      return ok(id, toolError('"matches" ריק — אין מה לכתוב.'));
-    }
+    const batch = parseBatch(args, "matches", bolMatchInput, "התאמה");
+    if ("error" in batch) return ok(id, toolError(batch.error));
+    return ok(id, toolText(await writeBolMatches(batch.items)));
+  }
 
-    const parsed = items.map((item) => bolMatchInput.safeParse(item));
-    const invalid = parsed.findIndex((p) => !p.success);
-    if (invalid !== -1) {
-      const result = parsed[invalid];
-      const issues = result.success
-        ? ""
-        : result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
-      return ok(id, toolError(`התאמה #${invalid + 1} לא עברה ולידציה — ${issues}`));
-    }
+  if (name === "shipment_worklist") {
+    const limit = (args as { limit?: unknown } | undefined)?.limit;
+    const lines = await getShipmentWorklist(
+      typeof limit === "number" && limit > 0 ? Math.min(500, Math.floor(limit)) : undefined,
+    );
+    return ok(id, toolText({ ok: true, count: lines.length, lines }));
+  }
 
-    const summary = await writeBolMatches(parsed.map((p) => p.data!));
-    return ok(id, toolText(summary));
+  if (name === "shipment_update") {
+    const batch = parseBatch(args, "updates", shipmentUpdateInput, "עדכון");
+    if ("error" in batch) return ok(id, toolError(batch.error));
+    return ok(id, toolText(await writeShipmentUpdates(batch.items)));
   }
 
   return fail(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(name)}`);
+}
+
+/**
+ * Both write tools take one object or an array of them under a named field, and
+ * both must reject the whole batch on the first bad item rather than writing
+ * half of it — a partial write with no error is the kind of thing nobody notices.
+ * The Hebrew message names which item failed and why, because that message is
+ * what ends up in the daily summary.
+ */
+function parseBatch<T extends z.ZodType>(
+  args: unknown,
+  field: string,
+  schema: T,
+  noun: string,
+): { items: z.infer<T>[] } | { error: string } {
+  const raw = (args as Record<string, unknown> | undefined)?.[field];
+  if (raw === undefined || raw === null) return { error: `חסר השדה "${field}".` };
+
+  const items = Array.isArray(raw) ? raw : [raw];
+  if (items.length === 0) return { error: `"${field}" ריק — אין מה לכתוב.` };
+
+  const parsed = items.map((item) => schema.safeParse(item));
+  const invalid = parsed.findIndex((p) => !p.success);
+  if (invalid !== -1) {
+    const result = parsed[invalid];
+    const issues = result.success
+      ? ""
+      : result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    return { error: `${noun} #${invalid + 1} לא עברה ולידציה — ${issues}` };
+  }
+
+  return { items: parsed.map((p) => p.data!) };
 }

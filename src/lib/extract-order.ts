@@ -124,6 +124,18 @@ export function normalizeExtractedOrder(
     }
   }
 
+  // Did we get every line? A multi-page order whose table continues past page one
+  // is the case this catches: the extraction succeeds, the lines look clean, and a
+  // whole page is simply missing. Nothing downstream can notice that on its own —
+  // the payload is valid either way — so the document's own line count is the only
+  // check available, and a mismatch has to reach the reviewer.
+  const declaredLines = num(obj.documentLineCount);
+  if (declaredLines !== null && declaredLines > lines.length) {
+    warnings.push(
+      `חולצו ${lines.length} שורות אך המסמך מצהיר על ${declaredLines} — ייתכן שעמוד שלם לא נקרא. יש לבדוק את המסמך המקורי לפני אישור`,
+    );
+  }
+
   // Foreign currency is never converted here — flag it.
   const currency = str(obj.documentCurrency);
   if (currency && !/^(ils|nis|₪|שקל|ש"ח|שח)$/i.test(currency)) {
@@ -178,6 +190,13 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 - customer הוא שם של ארגון, לא של אדם. שם של איש קשר, רוכש, מאשר או חותם (גם כשהוא מופיע ליד טלפון או אימייל) לא נכנס ל-customer; אם הוא רלוונטי — כתוב אותו ב-customerNote.
 - הזמנת משרד הביטחון (מספר שמתחיל ב-444): הלקוח הוא מספר קבוצת הרכש (למשל 134, 131, 135, 137), שאותו משחזרים מכתובת האימייל של הרוכש. לעולם אל תכתוב "משרד הביטחון" בשדה customer — את התיאור המילולי כתוב ב-customerNote.
 
+כל העמודים — חובה לקרוא את כולם:
+- טבלת השורות כמעט תמיד **נמשכת על פני כמה עמודים**. עליך לחלץ **כל** השורות מ**כל** העמודים, ולא לעצור בסוף העמוד הראשון. הזמנה של חמישה עמודים מחזירה את השורות של כל חמשת העמודים.
+- אין דבר כזה "השורות העיקריות". שורה שמופיעה במסמך ולא הוחזרה היא נתון שאבד בשקט, וזו התקלה החמורה ביותר שיכולה לקרות בחילוץ הזה.
+- כותרות טבלה, "המשך", מספרי עמוד ("עמוד 2 מתוך 5"), סיכומי ביניים וכותרת חוזרת בראש עמוד — אינם שורות הזמנה, ואינם סימן להתחלת מסמך חדש. דלג עליהם והמשך לשורות שאחריהם.
+- מספור השורות במסמך הוא הבקרה שלך: אם השורה האחרונה במסמך ממוספרת 47, צריכות לחזור 47 שורות. לפני שאתה מסיים — ודא שלא דילגת על עמוד.
+- documentLineCount = מספר השורות שהמסמך עצמו מצהיר עליו (מספר השורה האחרונה, או "סה"כ 47 שורות" אם כתוב). זה מה שמאפשר למערכת לזהות חילוץ חסר.
+
 שורות (lines):
 - pn = מק"ט היצרן (Manufacturer Part Number), למשל STM32L432KBU6.
 - sku = מק"ט הלקוח / מספר קטלוגי, למשל 345056.
@@ -194,7 +213,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 - תאריכים: החזר בפורמט ISO בלבד, yyyy-mm-dd. המר פורמטים כמו 15.7.2026, ‏15/7/2026 וגם 15/7/26.
 - מספרים: הסר סימני ₪ ו-$ ופסיקי אלפים. אם המטבע זר — אל תמיר לשקלים, השאר את המספר כמו שהוא והוסף warning.
 - אם המסמך אינו הזמנת רכש — החזר lines ריק והוסף warning שמסביר מה המסמך כן (הצעת מחיר, חשבונית, וכו').
-- אם המסמך מכיל כמה הזמנות — חלץ את ההזמנה הראשית והוסף warning על כך.
+- אם המסמך מכיל כמה הזמנות **שונות** (מספרי הזמנה שונים) — חלץ את ההזמנה הראשית והוסף warning על כך. כותרת שחוזרת בראש כל עמוד עם **אותו** מספר הזמנה היא עמוד נוסף של אותה הזמנה, לא הזמנה שנייה.
 - warnings: כתוב בעברית כל דבר שדורש עין אנושית (שדה מטושטש, נתון שלא היית בטוח בו, אי-התאמה וכו').`;
 
 /**
@@ -271,6 +290,11 @@ const SUBMIT_ORDER_TOOL: Anthropic.Tool = {
             },
           },
         },
+      },
+      documentLineCount: {
+        type: "number",
+        description:
+          'מספר שורות ההזמנה כפי שהמסמך מצהיר עליו — מספר השורה האחרונה בטבלה, או סה"כ מוצהר. משמש לבדיקה שלא אבדו שורות בחילוץ מרובה-עמודים.',
       },
       warnings: {
         type: "array",

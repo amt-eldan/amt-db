@@ -5,15 +5,21 @@ import { bolMatchInput } from "./validation";
 // The lines the fake database will hand back, keyed by id. `inArray` is stubbed
 // to a plain { ids } so the fake can see which ids were asked for without pulling
 // in drizzle's expression machinery.
-const { rows, candidates, applyLineFields, revalidatePath, getBolCandidateLines } = vi.hoisted(
-  () => ({
-    rows: new Map<number, unknown>(),
-    candidates: [] as unknown[],
-    applyLineFields: vi.fn(),
-    revalidatePath: vi.fn(),
-    getBolCandidateLines: vi.fn(),
-  }),
-);
+const {
+  rows,
+  candidates,
+  applyLineFields,
+  revalidatePath,
+  getBolCandidateLines,
+  convertBuyPriceToIls,
+} = vi.hoisted(() => ({
+  rows: new Map<number, unknown>(),
+  candidates: [] as unknown[],
+  applyLineFields: vi.fn(),
+  revalidatePath: vi.fn(),
+  getBolCandidateLines: vi.fn(),
+  convertBuyPriceToIls: vi.fn(),
+}));
 
 vi.mock("drizzle-orm", () => ({ inArray: (_column: unknown, ids: number[]) => ({ ids }) }));
 // Stubbed rather than exercised: the resolver itself is covered in bol-match.test.ts,
@@ -21,6 +27,8 @@ vi.mock("drizzle-orm", () => ({ inArray: (_column: unknown, ids: number[]) => ({
 vi.mock("@/db/queries", () => ({ getBolCandidateLines }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("./line-fields", () => ({ applyLineFields }));
+// The conversion itself is covered in fx.test.ts and shipment-write.test.ts.
+vi.mock("./fx-apply", () => ({ convertBuyPriceToIls }));
 vi.mock("@/db", () => ({
   db: {
     select: () => ({
@@ -58,6 +66,8 @@ beforeEach(() => {
   applyLineFields.mockClear();
   revalidatePath.mockClear();
   getBolCandidateLines.mockReset();
+  convertBuyPriceToIls.mockReset();
+  convertBuyPriceToIls.mockResolvedValue({});
   getBolCandidateLines.mockImplementation(async () => candidates);
 });
 
@@ -222,5 +232,43 @@ describe("writeBolMatches", () => {
     expect(summary.results[0]).toMatchObject({ lineId: null, status: "skipped" });
     expect(summary.results[0].reason).toBeTruthy();
     expect(applyLineFields).not.toHaveBeenCalled();
+  });
+});
+
+// A supplier's shipping confirmation often carries the handover date and the unit
+// price alongside the tracking number, so the email path records both rather than
+// waiting for the next status run.
+describe("a match that also carries a delivery and a price", () => {
+  it("records the delivery date and the dollar price", async () => {
+    rows.set(42, line());
+    await writeBolMatches([match({ deliveredAt: "2026-08-12", buyPriceUsd: 41.5 })]);
+    expect(writtenFields()).toMatchObject({
+      deliveredAt: "2026-08-12",
+      buyPriceUsd: "41.5",
+    });
+  });
+
+  it("converts through the one shared helper, with the delivery date it was given", async () => {
+    rows.set(42, line());
+    convertBuyPriceToIls.mockResolvedValue({
+      buyPrice: "154.42",
+      fxRate: "3.721",
+      fxRateDate: "2026-08-12",
+      fxRateSource: "boi",
+    });
+    await writeBolMatches([match({ deliveredAt: "2026-08-12", buyPriceUsd: 41.5 })]);
+    expect(convertBuyPriceToIls).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      "41.5",
+      "2026-08-12",
+    );
+    expect(writtenFields()).toMatchObject({ buyPrice: "154.42", fxRate: "3.721" });
+  });
+
+  it("a match carrying neither leaves both alone", async () => {
+    rows.set(42, line());
+    await writeBolMatches([match()]);
+    expect(writtenFields()).not.toHaveProperty("deliveredAt");
+    expect(writtenFields()).not.toHaveProperty("buyPriceUsd");
   });
 });

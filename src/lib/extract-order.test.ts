@@ -155,6 +155,43 @@ describe("normalizeExtractedOrder", () => {
     expect(hasWarning(close.warnings, 'סה"כ לא תואם')).toBe(false);
   });
 
+  // The multi-page short read: a five-page order whose table continues past page
+  // one used to come back with page one's lines only. The payload is perfectly
+  // valid in that state, so nothing downstream could notice — the document's own
+  // line count is the only signal there is.
+  it("warns when fewer lines were extracted than the document declares", () => {
+    const onePage = Array.from({ length: 12 }, (_, i) => ({ pn: `P${i}`, qty: 1, unitPrice: 1 }));
+
+    const short = normalizeExtractedOrder(
+      raw({ lines: onePage, documentLineCount: 47 }),
+      "po.pdf",
+      today,
+    );
+    expect(hasWarning(short.warnings, "ייתכן שעמוד שלם לא נקרא")).toBe(true);
+    expect(hasWarning(short.warnings, "12")).toBe(true);
+    expect(hasWarning(short.warnings, "47")).toBe(true);
+    // The lines that did come back are still staged — a short read is reviewed,
+    // not thrown away.
+    expect(short.order.lines).toHaveLength(12);
+  });
+
+  it("stays quiet when the count matches, or when the model read more than declared", () => {
+    const lines = Array.from({ length: 47 }, (_, i) => ({ pn: `P${i}`, qty: 1, unitPrice: 1 }));
+
+    const exact = normalizeExtractedOrder(raw({ lines, documentLineCount: 47 }), "po.pdf", today);
+    expect(hasWarning(exact.warnings, "ייתכן שעמוד שלם לא נקרא")).toBe(false);
+
+    // Over-reading is a different problem (a subtotal row read as a line) and the
+    // total check is what catches it — this warning must not fire on it.
+    const over = normalizeExtractedOrder(raw({ lines, documentLineCount: 45 }), "po.pdf", today);
+    expect(hasWarning(over.warnings, "ייתכן שעמוד שלם לא נקרא")).toBe(false);
+  });
+
+  it("does not warn when the document declares no line count", () => {
+    const { warnings } = normalizeExtractedOrder(raw(), "po.pdf", today);
+    expect(hasWarning(warnings, "ייתכן שעמוד שלם לא נקרא")).toBe(false);
+  });
+
   it("warns on foreign currency without converting", () => {
     const { order, warnings } = normalizeExtractedOrder(
       raw({ documentCurrency: "USD" }),

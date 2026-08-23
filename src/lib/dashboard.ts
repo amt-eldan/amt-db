@@ -28,6 +28,7 @@ export interface DashboardLine {
   bol: string | null;
   bolSource: string | null;
   bolConfidence: string | null;
+  shipmentStatus: string | null;
   deliveryUpdate: string | null;
   notes: string | null;
   manualStatus: string | null;
@@ -168,7 +169,7 @@ export function buildDashboard(input: DashboardInput): DashboardData {
   const { lines, supplierInvoices, courierInvoices } = input;
 
   // --- open pipeline -------------------------------------------------------
-  const byStatus: Record<LineStatus, number> = { green: 0, orange: 0, red: 0, neutral: 0 };
+  const byStatus: Record<LineStatus, number> = { green: 0, blue: 0, orange: 0, red: 0, neutral: 0 };
   const openCustomers = new Set<string>();
   const customerTotals = new Map<string, { value: number; count: number }>();
   let openLines = 0;

@@ -21,10 +21,11 @@ import { STATUS_LABELS, type LineStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { TrendChart } from "./trend-chart";
 
-const STATUS_ORDER: LineStatus[] = ["red", "orange", "green", "neutral"];
+const STATUS_ORDER: LineStatus[] = ["red", "orange", "blue", "green", "neutral"];
 const STATUS_FILLS: Record<LineStatus, string> = {
   red: "bg-red-500",
   orange: "bg-orange-400",
+  blue: "bg-blue-500",
   green: "bg-green-500",
   neutral: "bg-muted-foreground/30",
 };
