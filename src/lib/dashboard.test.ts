@@ -13,6 +13,7 @@ function line(over: Partial<DashboardLine> & { lineId: number }): DashboardLine 
     buyPrice: "60",
     shippingCost: null,
     orderDate: "2026-07-01",
+    receivedDate: "2026-07-01",
     contractDueDate: null,
     bol: null,
     bolSource: null,
@@ -94,12 +95,12 @@ describe("buildDashboard — open pipeline", () => {
 });
 
 describe("buildDashboard — the month", () => {
-  it("summarizes the latest month that has closed lines", () => {
+  it("summarizes the latest month that has lines", () => {
     const data = buildDashboard(
       input({
         lines: [
-          line({ lineId: 1, isOpen: false, orderDate: "2026-06-03", shippingCost: "50" }),
-          line({ lineId: 2, isOpen: false, orderDate: "2026-05-03" }),
+          line({ lineId: 1, isOpen: false, receivedDate: "2026-06-03", shippingCost: "50" }),
+          line({ lineId: 2, isOpen: false, receivedDate: "2026-05-03" }),
         ],
       }),
     );
@@ -112,9 +113,53 @@ describe("buildDashboard — the month", () => {
     expect(data.month.stale).toBe(true);
   });
 
-  it("says nothing is stale when the current month already has closed lines", () => {
+  // The regression this whole cut was changed for: August had orders, none of
+  // them closed, and the dashboard reported the month before it.
+  it("summarizes a month whose lines are all still open", () => {
     const data = buildDashboard(
-      input({ lines: [line({ lineId: 1, isOpen: false, orderDate: "2026-07-02" })] }),
+      input({
+        today: new Date("2026-08-26T12:00:00"),
+        lines: [
+          line({ lineId: 1, receivedDate: "2026-08-04", shippingCost: "50" }),
+          line({ lineId: 2, receivedDate: "2026-07-30" }),
+        ],
+      }),
+    );
+    expect(data.month.ym).toBe("2026-08");
+    expect(data.month.sale).toBe(1000);
+    expect(data.month.profit).toBe(350);
+    expect(data.month.lines).toBe(1);
+    expect(data.month.open).toBe(1);
+    expect(data.month.stale).toBe(false);
+
+    const august = data.trend.find((p) => p.ym === "2026-08")!;
+    expect(august.sale).toBe(1000);
+    expect(august.lines).toBe(1);
+  });
+
+  // order_date is nullable and intake often leaves it so. Keying the month on it
+  // dropped those lines out of every bucket at once.
+  it("uses the received date, so a line with no order date still lands in its month", () => {
+    const data = buildDashboard(
+      input({
+        lines: [line({ lineId: 1, orderDate: null, receivedDate: "2026-07-02" })],
+      }),
+    );
+    expect(data.month.ym).toBe("2026-07");
+    expect(data.month.lines).toBe(1);
+    expect(data.month.sale).toBe(1000);
+  });
+
+  it("counts an open line once, in its month and in the open pipeline", () => {
+    const data = buildDashboard(input({ lines: [line({ lineId: 1, receivedDate: "2026-07-02" })] }));
+    expect(data.month.lines).toBe(1);
+    expect(data.month.open).toBe(1);
+    expect(data.open.lines).toBe(1);
+  });
+
+  it("says nothing is stale when the current month already has lines", () => {
+    const data = buildDashboard(
+      input({ lines: [line({ lineId: 1, isOpen: false, receivedDate: "2026-07-02" })] }),
     );
     expect(data.month.ym).toBe("2026-07");
     expect(data.month.stale).toBe(false);
@@ -124,8 +169,8 @@ describe("buildDashboard — the month", () => {
     const data = buildDashboard(
       input({
         lines: [
-          line({ lineId: 1, isOpen: false, orderDate: "2026-07-02" }),
-          line({ lineId: 2, isOpen: false, orderDate: "2026-07-02", buyPrice: null }),
+          line({ lineId: 1, isOpen: false, receivedDate: "2026-07-02" }),
+          line({ lineId: 2, isOpen: false, receivedDate: "2026-07-02", buyPrice: null }),
         ],
       }),
     );
@@ -134,11 +179,24 @@ describe("buildDashboard — the month", () => {
     expect(data.month.profit).toBe(400);
   });
 
-  it("falls back to the current month when nothing is closed yet", () => {
-    const data = buildDashboard(input({ lines: [line({ lineId: 1 })] }));
+  it("falls back to the current month when there are no lines at all", () => {
+    const data = buildDashboard(input());
     expect(data.month.ym).toBe("2026-07");
     expect(data.month.sale).toBe(0);
     expect(data.month.margin).toBeNull();
+  });
+
+  // A contract dated ahead must not take over the card for the month being worked on.
+  it("never makes a future month the headline", () => {
+    const data = buildDashboard(
+      input({
+        lines: [
+          line({ lineId: 1, receivedDate: "2026-09-10" }),
+          line({ lineId: 2, receivedDate: "2026-07-10" }),
+        ],
+      }),
+    );
+    expect(data.month.ym).toBe("2026-07");
   });
 });
 
@@ -169,26 +227,24 @@ describe("buildDashboard — trend", () => {
     ]);
   });
 
-  it("puts closed lines in the month of their order date", () => {
+  it("puts a line in the month it came in, whether it is open or closed", () => {
     const data = buildDashboard(
       input({
         lines: [
-          line({ lineId: 1, isOpen: false, orderDate: "2026-05-20" }),
-          line({ lineId: 2, isOpen: false, orderDate: "2026-05-28", qty: "1", unitPrice: "10" }),
+          line({ lineId: 1, isOpen: false, receivedDate: "2026-05-20" }),
+          line({
+            lineId: 2,
+            receivedDate: "2026-05-28",
+            qty: "1",
+            unitPrice: "10",
+          }),
         ],
       }),
     );
     const may = data.trend.find((p) => p.ym === "2026-05")!;
     expect(may.sale).toBe(1010);
     expect(may.lines).toBe(2);
-  });
-
-  it("ignores a closed line with no order date rather than dropping it into a bucket", () => {
-    const data = buildDashboard(
-      input({ lines: [line({ lineId: 1, isOpen: false, orderDate: null })] }),
-    );
-    expect(data.trend.every((p) => p.lines === 0)).toBe(true);
-    expect(data.month.lines).toBe(0);
+    expect(may.open).toBe(1);
   });
 });
 

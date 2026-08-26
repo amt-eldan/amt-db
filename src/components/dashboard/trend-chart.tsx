@@ -55,7 +55,8 @@ export function TrendChart({ points }: { points: MonthPoint[] }) {
                   רווח: <bdi dir="ltr">{formatILS(point.profit)}</bdi>
                 </p>
                 <p dir="rtl" className="opacity-80">
-                  {point.lines} שורות סגורות
+                  {point.lines} שורות
+                  {point.open > 0 && ` · ${point.open} עוד פתוחות`}
                   {point.pending > 0 && ` · ${point.pending} בלי מחיר קנייה`}
                 </p>
               </TooltipContent>

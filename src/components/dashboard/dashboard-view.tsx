@@ -89,7 +89,7 @@ export function DashboardView({
           value={formatILS(month.profit)}
           sub={
             month.margin === null
-              ? "אין שורות סגורות בחודש"
+              ? "אין שורות בחודש"
               : `שיעור רווח ${(month.margin * 100).toFixed(1)}%${
                   month.pending > 0
                     ? ` · ${countLabel(month.pending, "שורה אחת ממתינה", "שורות ממתינות")} למחיר קנייה`
@@ -102,15 +102,17 @@ export function DashboardView({
         <Tile
           label={`מכירות ${month.label}`}
           value={formatILS(month.sale)}
-          sub={`${countLabel(month.lines, "שורה סגורה אחת", "שורות סגורות")} · משלוח ${formatILS(month.shipping)}`}
+          sub={`${countLabel(month.lines, "שורה אחת", "שורות")}${
+            month.open > 0 ? ` · ${month.open} עוד פתוחות` : ""
+          } · משלוח ${formatILS(month.shipping)}`}
           href={`/monthly?month=${month.ym}`}
         />
       </div>
 
       {month.stale && (
         <p className="text-xs text-muted-foreground">
-          החודש המסוכם הוא {month.label} — החודש האחרון שיש בו שורות סגורות. שורות נכנסות לסיכום
-          החודשי כשהן נסגרות.
+          החודש המסוכם הוא {month.label} — החודש האחרון שיש בו שורות. בחודש הנוכחי עוד לא נקלטה
+          אף הזמנה.
         </p>
       )}
 

@@ -6,6 +6,7 @@ import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "luc
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
 import { LateDeliveryBadge } from "@/components/lines/late-delivery-badge";
+import { BolSyncButton } from "./bol-sync-button";
 import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import { ReceivedDate } from "@/components/lines/received-date";
 import {
@@ -65,10 +66,13 @@ export function OpenOrdersView({
   lines,
   stats,
   showArchived,
+  gmailConfigured,
 }: {
   lines: LineRow[];
   stats: OpenStats;
   showArchived: boolean;
+  /** Whether the server can read the mailbox — decided on the server, see page.tsx. */
+  gmailConfigured: boolean;
 }) {
   const router = useRouter();
   const [search, setSearch] = useState("");
@@ -171,6 +175,9 @@ export function OpenOrdersView({
           {showArchived ? "שורות בארכיון" : "הזמנות פתוחות"}
         </h1>
         <div className="flex items-center gap-2 text-sm">
+          {/* Only on the live list. In the archive every line is closed, and a
+              tracking number found for one would have nowhere useful to go. */}
+          {!showArchived && <BolSyncButton configured={gmailConfigured} />}
           {/* In the URL, not in state: the server sends only the set being shown,
               and the view survives a refresh or a shared link. */}
           <Switch

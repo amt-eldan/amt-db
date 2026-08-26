@@ -5,8 +5,15 @@
  *
  * Definitions follow the pages they summarize, so a figure here never disagrees
  * with the screen it links to: profit uses lib/profit, status uses lib/status, and
- * a month is a month of *order dates* over *closed* lines — the same cut the
- * monthly summary makes.
+ * a month is a month of *received dates* over *every* line — open and closed
+ * alike — which is the cut /monthly makes and the page these cards link to.
+ *
+ * That alignment used to be claimed here and not implemented, and it hid a whole
+ * month: totals were summed over closed lines only, keyed on `order_date`. So a
+ * month whose orders had all arrived but none had been closed read as zero, and a
+ * line on an order with no explicit `order_date` (the column is nullable, and
+ * intake often leaves it so) was dropped from every month at once. Both are why
+ * the trend showed an empty August while /monthly listed August's rows.
  */
 import { hasBol } from "./bol";
 import { HEBREW_MONTHS } from "./format";
@@ -24,6 +31,12 @@ export interface DashboardLine {
   buyPrice: string | null;
   shippingCost: string | null;
   orderDate: string | null;
+  /**
+   * The month a line belongs to, already coalesced by the query
+   * (`coalesce(order_date, created_at)`) so it is never null — unlike orderDate,
+   * which is why it and not orderDate decides the month here.
+   */
+  receivedDate: string;
   contractDueDate: string | null;
   bol: string | null;
   bolSource: string | null;
@@ -67,6 +80,8 @@ export interface MonthPoint {
   lines: number;
   /** Lines whose profit is unknown (no buy price) — the bar understates by these. */
   pending: number;
+  /** Still-open lines among them, so a month in progress is not read as final. */
+  open: number;
 }
 
 export interface RankedEntry {
@@ -104,6 +119,8 @@ export interface DashboardData {
     margin: number | null;
     lines: number;
     pending: number;
+    /** Still-open lines in the month — the sale total is booked, not all realized. */
+    open: number;
     /** True when the headline month is not the current calendar month. */
     stale: boolean;
   };
@@ -179,14 +196,46 @@ export function buildDashboard(input: DashboardInput): DashboardData {
   let missingBol = 0;
   let lowConfidenceBol = 0;
 
-  // --- closed lines, grouped by the month of their order -------------------
-  const monthTotals = new Map<string, { sale: number; profit: number; shipping: number; lines: number; pending: number }>();
+  // --- every line, grouped by the month it came in -------------------------
+  type MonthTotals = {
+    sale: number;
+    profit: number;
+    shipping: number;
+    lines: number;
+    pending: number;
+    open: number;
+  };
+  const emptyMonth = (): MonthTotals => ({
+    sale: 0,
+    profit: 0,
+    shipping: 0,
+    lines: 0,
+    pending: 0,
+    open: 0,
+  });
+  const monthTotals = new Map<string, MonthTotals>();
   let closedMissingBuyPrice = 0;
   let closedMissingShipping = 0;
 
   for (const line of lines) {
     const value = lineValue(line) ?? 0;
     const profit = lineProfit(line);
+
+    // The month cut, for open and closed lines alike: a month is "what came in",
+    // so an order received in August counts in August while it is still in the
+    // air. Profit only adds up over lines that have one — the rest raise
+    // `pending`, exactly as /monthly shows them as "ממתין".
+    const ym = (line.receivedDate ?? line.orderDate)?.slice(0, 7) ?? null;
+    if (ym) {
+      const entry = monthTotals.get(ym) ?? emptyMonth();
+      entry.sale += value;
+      entry.lines++;
+      if (line.isOpen) entry.open++;
+      if (profit === null) entry.pending++;
+      else entry.profit += profit;
+      entry.shipping += num(line.shippingCost) ?? 0;
+      monthTotals.set(ym, entry);
+    }
 
     if (line.isOpen) {
       openLines++;
@@ -206,17 +255,6 @@ export function buildDashboard(input: DashboardInput): DashboardData {
         expectedProfitLines++;
       }
     } else {
-      const ym = line.orderDate ? line.orderDate.slice(0, 7) : null;
-      if (ym) {
-        const entry =
-          monthTotals.get(ym) ?? { sale: 0, profit: 0, shipping: 0, lines: 0, pending: 0 };
-        entry.sale += value;
-        entry.lines++;
-        if (profit === null) entry.pending++;
-        else entry.profit += profit;
-        entry.shipping += num(line.shippingCost) ?? 0;
-        monthTotals.set(ym, entry);
-      }
       if (num(line.buyPrice) === null) closedMissingBuyPrice++;
       if (num(line.shippingCost) === null) closedMissingShipping++;
     }
@@ -227,12 +265,16 @@ export function buildDashboard(input: DashboardInput): DashboardData {
     }
   }
 
-  // --- headline month: the latest one with closed lines --------------------
+  // --- headline month: the latest one that has lines ----------------------
+  // Never a future one. A contract can be dated ahead, and a headline card for a
+  // month that has not happened would push the month being worked on off screen.
   const currentYm = ymOf(today);
-  const monthsWithData = [...monthTotals.keys()].sort().reverse();
-  const headlineYm = monthsWithData[0] ?? currentYm;
-  const headline =
-    monthTotals.get(headlineYm) ?? { sale: 0, profit: 0, shipping: 0, lines: 0, pending: 0 };
+  const headlineYm =
+    [...monthTotals.keys()]
+      .filter((ym) => ym <= currentYm)
+      .sort()
+      .reverse()[0] ?? currentYm;
+  const headline = monthTotals.get(headlineYm) ?? emptyMonth();
 
   const trend: MonthPoint[] = recentMonths(today).map((ym) => {
     const entry = monthTotals.get(ym);
@@ -243,6 +285,7 @@ export function buildDashboard(input: DashboardInput): DashboardData {
       profit: round2(entry?.profit ?? 0),
       lines: entry?.lines ?? 0,
       pending: entry?.pending ?? 0,
+      open: entry?.open ?? 0,
     };
   });
 
@@ -374,6 +417,7 @@ export function buildDashboard(input: DashboardInput): DashboardData {
       margin: headline.sale > 0 ? headline.profit / headline.sale : null,
       lines: headline.lines,
       pending: headline.pending,
+      open: headline.open,
       stale: headlineYm !== currentYm,
     },
     trend,
