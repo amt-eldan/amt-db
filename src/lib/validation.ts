@@ -351,6 +351,38 @@ export const shipmentUpdateInput = z
     },
   );
 
+/**
+ * Applying the reviewed matches from an uploaded purchase order.
+ *
+ * The browser sends line ids and unit costs; it does not send its matching
+ * reasoning, because the server re-runs `evaluatePoWrite` on every item anyway.
+ * The cost is required and must be positive — a purchase-order line with no
+ * readable price has nothing to contribute and is dropped in the review screen
+ * rather than sent as a zero.
+ */
+export const poApplyInput = z.object({
+  poNumber: z.string().trim().min(1, "מספר הזמנת רכש חובה").max(200),
+  supplier: optionalText,
+  currency: z.enum(["USD", "ILS"]),
+  sourceFile: optionalText,
+  matches: z
+    .array(
+      z.object({
+        lineId: z.number().int().positive(),
+        unitCost: z.number().finite().positive("מחיר קנייה חייב להיות חיובי"),
+        qty: z
+          .number()
+          .finite()
+          .nullish()
+          .transform((v) => v ?? null),
+      }),
+    )
+    .min(1, "לא נבחרה אף שורה")
+    .max(500),
+});
+
+export type PoApplyInput = z.infer<typeof poApplyInput>;
+
 export type StagedPayload = z.infer<typeof stagedPayload>;
 export type OrderInput = z.infer<typeof orderInput>;
 export type BolMatchInput = z.infer<typeof bolMatchInput>;

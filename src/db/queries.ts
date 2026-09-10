@@ -15,6 +15,7 @@ import {
   supplierInvoices,
 } from "@/db/schema";
 import type { BolCandidateLine } from "@/lib/bol-match";
+import type { PoCandidateLine } from "@/lib/po-match";
 import type { CourierLineOption } from "@/lib/courier-match";
 import { monthRange } from "@/lib/format";
 import {
@@ -359,6 +360,35 @@ export async function getShipmentWorklist(limit = 200): Promise<ShipmentWorklist
     )
     .orderBy(sql`${orderLines.shipmentStatusAt} asc nulls first`, asc(orderLines.id))
     .limit(limit);
+}
+
+/**
+ * Lines an uploaded purchase order's costs could belong to.
+ *
+ * Everything, open and closed — resolvePoLine needs to see a closed match so it
+ * can say "only closed lines match" rather than "nothing matches", which are
+ * different problems for whoever is reviewing.
+ */
+export async function getPoCandidateLines(): Promise<PoCandidateLine[]> {
+  return db
+    .select({
+      lineId: orderLines.id,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      pn: orderLines.pn,
+      sku: orderLines.sku,
+      qty: orderLines.qty,
+      poNumber: orderLines.poNumber,
+      supplier: orderLines.supplier,
+      buyPrice: orderLines.buyPrice,
+      buyPriceUsd: orderLines.buyPriceUsd,
+      fxRateSource: orderLines.fxRateSource,
+      isOpen: orderLines.isOpen,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .orderBy(asc(orderLines.id));
 }
 
 export async function getBolCandidateLines(): Promise<BolCandidateLine[]> {

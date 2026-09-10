@@ -6,6 +6,7 @@ import {
   type StagedItem,
 } from "@/components/intake/staged-list";
 import { UploadOrderButton } from "@/components/intake/upload-order-button";
+import { UploadPurchaseOrderButton } from "@/components/intake/upload-purchase-order-button";
 import { Separator } from "@/components/ui/separator";
 import { stagedPayload, stagedWarnings } from "@/lib/validation";
 
@@ -46,13 +47,22 @@ export default async function IntakePage() {
       <div>
         <h1 className="text-2xl font-bold">קליטת הזמנה</h1>
         <p className="text-sm text-muted-foreground">
-          הזנה ידנית של הזמנת לקוח, או אישור הזמנות שנסרקו אוטומטית.
+          הזנה ידנית של הזמנת לקוח, אישור הזמנות שנסרקו אוטומטית, וקליטת מחירי קנייה מהזמנת רכש
+          שלנו לספק.
         </p>
       </div>
 
       <UploadOrderButton />
 
       <StagedList items={stagedItems} invalid={invalidStaged} />
+
+      <Separator />
+
+      {/* The other direction: our order to a supplier, which is where the unit
+          buy price lives. Kept visually apart from the customer-order upload
+          above, because reading one document with the other's extractor writes a
+          cost as a revenue. */}
+      <UploadPurchaseOrderButton />
 
       <Separator />
 
