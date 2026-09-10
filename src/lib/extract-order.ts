@@ -12,6 +12,22 @@ import { customerFromOrderNumber, isModOrderNumber, stagedPayload } from "./vali
  */
 export type ExtractedOrder = Omit<z.input<typeof stagedPayload>, "sourceFile">;
 
+/**
+ * Which document the model decided it was looking at.
+ *
+ * "הזמנת רכש" names two opposite documents in Hebrew — the customer's order to
+ * us, and ours to a supplier — and only the first belongs here. The second
+ * carries **our cost** per unit, and this extractor's `unitPrice` is written to
+ * `order_lines.unit_price`, the price the customer pays. Filing one as the other
+ * turns every profit figure on that order to zero or negative, silently, and
+ * nothing downstream can notice: both are just numbers on lines.
+ *
+ * So the distinction is made explicitly, and enforced in code rather than left
+ * to the prompt.
+ */
+export const DOCUMENT_KINDS = ["customer_order", "our_purchase_order", "other"] as const;
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
 export type ExtractResult =
   | { ok: true; order: ExtractedOrder; warnings: string[] }
   | { ok: false; error: string };
@@ -39,9 +55,17 @@ export function normalizeExtractedOrder(
   raw: unknown,
   fileName: string,
   today: Date = new Date(),
-): { order: ExtractedOrder; warnings: string[] } {
+): { order: ExtractedOrder; warnings: string[]; documentKind: DocumentKind } {
   const obj = asRecord(raw);
   const warnings: string[] = [];
+
+  // Anything unrecognised reads as the expected document, because that is what a
+  // model that simply omitted the field meant — the refusal below is for a
+  // document positively identified as ours.
+  const rawKind = str(obj.documentKind);
+  const documentKind: DocumentKind = DOCUMENT_KINDS.includes(rawKind as DocumentKind)
+    ? (rawKind as DocumentKind)
+    : "customer_order";
 
   // Model-emitted warnings come first; local checks append to them.
   if (Array.isArray(obj.warnings)) {
@@ -138,8 +162,28 @@ export function normalizeExtractedOrder(
 
   // Foreign currency is never converted here — flag it.
   const currency = str(obj.documentCurrency);
-  if (currency && !/^(ils|nis|₪|שקל|ש"ח|שח)$/i.test(currency)) {
+  const foreignCurrency = Boolean(currency) && !/^(ils|nis|₪|שקל|ש"ח|שח)$/i.test(currency!);
+  if (foreignCurrency) {
     warnings.push(`המטבע במסמך (${currency}) אינו שקל — לא בוצעה המרה, יש לבדוק ידנית`);
+  }
+
+  // Our own purchase order to a supplier. The prompt asks for empty lines here;
+  // this drops them regardless, because a prompt is a request and this is the one
+  // mistake that cannot be seen once it is stored.
+  if (documentKind === "our_purchase_order") {
+    warnings.push(
+      'המסמך זוהה כ**הזמנת רכש שלנו לספק**, לא כהזמנת לקוח. המחיר בו הוא מה שאנחנו משלמים, ולכן אין לקלוט אותו כהזמנה — הוא היה נרשם כמחיר מכירה והרווח היה יוצא אפס',
+    );
+  } else if (documentKind === "other") {
+    warnings.push("המסמך לא זוהה כהזמנת לקוח — יש לבדוק מה הוא לפני קליטה");
+  } else if (customer === null && read && isOwnCompanyName(read) && foreignCurrency) {
+    // Claimed to be a customer order, but the only name found was ours and the
+    // document is not in shekels. Both are true of our own purchase orders and
+    // neither is normal for a customer's, so say so rather than inviting the
+    // reviewer to type a customer name over it.
+    warnings.push(
+      `המסמך הוגדר כהזמנת לקוח, אבל השם היחיד שזוהה הוא שלנו והמטבע ${currency} — ייתכן שזו הזמנת רכש שלנו לספק. יש לוודא לפני שמזינים שם לקוח`,
+    );
   }
 
   // MoD order but the customer isn't a short purchasing-group number.
@@ -163,17 +207,38 @@ export function normalizeExtractedOrder(
     orderNumber: orderNumber ?? "",
     orderDate,
     sourceFormat: isMod ? "mod" : "standard",
-    lines,
+    // Enforced here, not asked for in the prompt: a document identified as ours
+    // yields no order lines whatever the model returned alongside that verdict.
+    lines: documentKind === "our_purchase_order" ? [] : lines,
   };
 
-  return { order, warnings };
+  return { order, warnings, documentKind };
 }
 
 // ---------------------------------------------------------------------------
 // Extraction via the Messages API
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purchase Orders) שמתקבלות אצל חברת האלקטרוניקה הישראלית ${OWN_COMPANY_LABEL}. ההזמנה נשלחה אלינו: הלקוח הוא זה שהוציא אותה, ואנחנו הספק שאמור לספק את הסחורה. המסמך המצורף הוא PDF של הזמנה. עליך להחזיר את הנתונים דרך הכלי submit_order בלבד. אל תמציא נתונים — שדה שלא נקרא בבירור, השמט אותו.
+const SYSTEM_PROMPT = `אתה מחלץ נתונים **מהזמנות של לקוחות** שמתקבלות אצל חברת האלקטרוניקה הישראלית ${OWN_COMPANY_LABEL}. ההזמנה נשלחה אלינו: הלקוח הוא זה שהוציא אותה, ואנחנו הספק שאמור לספק את הסחורה. המסמך המצורף הוא PDF של הזמנה. עליך להחזיר את הנתונים דרך הכלי submit_order בלבד. אל תמציא נתונים — שדה שלא נקרא בבירור, השמט אותו.
+
+## שני מסמכים שנראים אותו דבר — חובה להבחין ביניהם
+
+המילה "הזמנת רכש" משמשת בעברית לשני מסמכים הפוכים, ורק אחד מהם שייך לחילוץ הזה:
+
+| | **הזמנת לקוח** (זה מה שאתה מחלץ) | **הזמנת רכש שלנו** (זה לא) |
+|---|---|---|
+| מי הוציא | הלקוח | אנחנו, ${OWN_COMPANY_LABEL} |
+| מי הספק | אנחנו | ספק חוץ (DigiKey, Mouser, יצרן) |
+| השם שלנו מופיע ב | "לכבוד" / "ספק" / "Vendor" / "To" | "מזמין" / "קונה" / "Buyer" / "Bill To" |
+| המחיר במסמך הוא | מחיר **מכירה** ללקוח | מחיר **קנייה** שלנו |
+| מטבע אופייני | שקלים | דולרים |
+
+**documentKind** — קבע אותו לפני כל שדה אחר:
+- \`customer_order\` — הלקוח הוציא את ההזמנה ואנחנו הספק. זה המסמך הצפוי; המשך כרגיל.
+- \`our_purchase_order\` — **אנחנו** הוצאנו את ההזמנה וספק חוץ אמור לספק לנו. במקרה הזה **החזר lines ריק** והוסף warning שמסביר שזו הזמנת רכש שלנו לספק ולא הזמנת לקוח. אל תחלץ שורות, ואל תנסה "להציל" את המסמך.
+- \`other\` — כל דבר אחר (הצעת מחיר, חשבונית, תעודת משלוח). lines ריק + warning שאומר מה המסמך כן.
+
+**למה זה קריטי:** המערכת כותבת \`unitPrice\` בתור מחיר המכירה ללקוח. אם המסמך הוא הזמנת רכש שלנו, המספר על הדף הוא מה ש**אנחנו** משלמים — לכתוב אותו כמחיר מכירה הופך את הרווח לאפס או לשלילי, בשקט, בכל הדוחות. אין דרך לזהות את זה במורד הזרם, ולכן ההבחנה הזאת היא שלך.
 
 הפורמטים שנראו בשטח: הזמנת רכש ממשלתית דיגיטלית (משרד ראש הממשלה), אותה הזמנה כשהיא סרוקה עם חתימות יד, פורטל משרד הביטחון, ו-PO ממערכות ERP של לקוחות (כגון ERPNext). ייתכנו גם פורמטים שלא נראו עדיין — התאם את עצמך.
 
@@ -200,7 +265,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 שורות (lines):
 - pn = מק"ט היצרן (Manufacturer Part Number), למשל STM32L432KBU6.
 - sku = מק"ט הלקוח / מספר קטלוגי, למשל 345056.
-- unitPrice = מחיר ליחידה אחת, לפני מע"מ. לא סכום השורה הכולל ולא כולל מע"מ. אם במסמך מופיע רק סכום שורה — חלק בכמות כדי לקבל מחיר ליחידה.
+- unitPrice = מחיר ה**מכירה** ליחידה אחת שהלקוח משלם לנו, לפני מע"מ. לא סכום השורה הכולל ולא כולל מע"מ. אם במסמך מופיע רק סכום שורה — חלק בכמות כדי לקבל מחיר ליחידה. **זה לא מחיר הקנייה שלנו** — מחיר קנייה לא מופיע על הזמנת לקוח בכלל.
 - qty = כמות.
 - contractDueDate = מועד האספקה הנדרש.
 - תיאור המוצר ושם היצרן → notes של השורה.
@@ -212,7 +277,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מהזמנות רכש (Purch
 כללים כלליים:
 - תאריכים: החזר בפורמט ISO בלבד, yyyy-mm-dd. המר פורמטים כמו 15.7.2026, ‏15/7/2026 וגם 15/7/26.
 - מספרים: הסר סימני ₪ ו-$ ופסיקי אלפים. אם המטבע זר — אל תמיר לשקלים, השאר את המספר כמו שהוא והוסף warning.
-- אם המסמך אינו הזמנת רכש — החזר lines ריק והוסף warning שמסביר מה המסמך כן (הצעת מחיר, חשבונית, וכו').
+- אם המסמך אינו הזמנת לקוח — קבע documentKind בהתאם, החזר lines ריק, והוסף warning שמסביר מה המסמך כן.
 - אם המסמך מכיל כמה הזמנות **שונות** (מספרי הזמנה שונים) — חלץ את ההזמנה הראשית והוסף warning על כך. כותרת שחוזרת בראש כל עמוד עם **אותו** מספר הזמנה היא עמוד נוסף של אותה הזמנה, לא הזמנה שנייה.
 - warnings: כתוב בעברית כל דבר שדורש עין אנושית (שדה מטושטש, נתון שלא היית בטוח בו, אי-התאמה וכו').`;
 
@@ -269,6 +334,12 @@ const SUBMIT_ORDER_TOOL: Anthropic.Tool = {
       documentCurrency: {
         type: "string",
         description: "מטבע המסמך (ILS, USD, EUR וכו').",
+      },
+      documentKind: {
+        type: "string",
+        enum: ["customer_order", "our_purchase_order", "other"],
+        description:
+          `איזה מסמך זה. customer_order = הלקוח הוציא את ההזמנה ואנחנו הספק (הצפוי). our_purchase_order = אנחנו (${OWN_COMPANY_LABEL}) הוצאנו אותה לספק חוץ — אז lines ריק, כי המחיר שם הוא מחיר קנייה ואסור לו להיכתב כמחיר מכירה. other = כל מסמך אחר.`,
       },
       lines: {
         type: "array",
@@ -382,11 +453,19 @@ export async function extractOrderFromPdf(
     return { ok: false, error: `לא התקבל פלט מובנה מהחילוץ.${MANUAL_FALLBACK}` };
   }
 
-  const { order, warnings } = normalizeExtractedOrder(toolUse.input, fileName);
+  const { order, warnings, documentKind } = normalizeExtractedOrder(toolUse.input, fileName);
+
+  if (documentKind === "our_purchase_order") {
+    return {
+      ok: false,
+      error:
+        'המסמך הוא הזמנת רכש שלנו לספק, לא הזמנת לקוח — ולכן הוא לא נקלט. המחיר שבו הוא מחיר הקנייה שלנו, וקליטתו כהזמנה הייתה רושמת אותו כמחיר מכירה. מסך קליטת ההזמנות מיועד להזמנות שלקוחות שולחים אלינו.',
+    };
+  }
 
   if (order.lines.length === 0) {
     const explanation = warnings.length ? ` (${warnings.join("; ")})` : "";
-    return { ok: false, error: `לא זוהתה הזמנת רכש במסמך${explanation}.${MANUAL_FALLBACK}` };
+    return { ok: false, error: `לא זוהתה הזמנת לקוח במסמך${explanation}.${MANUAL_FALLBACK}` };
   }
 
   return { ok: true, order, warnings };

@@ -19,6 +19,82 @@ function raw(over: Record<string, unknown> = {}) {
 const hasWarning = (warnings: string[], needle: string) =>
   warnings.some((w) => w.includes(needle));
 
+/**
+ * "הזמנת רכש" names two opposite documents, and only the customer's order to us
+ * belongs in this extractor. Ours to a supplier carries what we PAY, and this
+ * path writes unit_price — the price the customer pays us. Filing one as the
+ * other zeroes the profit on that order and nothing downstream can see it.
+ */
+describe("normalizeExtractedOrder — telling the two documents apart", () => {
+  it("treats a document with no kind as the expected customer order", () => {
+    const { documentKind, order } = normalizeExtractedOrder(raw(), "po.pdf", today);
+    expect(documentKind).toBe("customer_order");
+    expect(order.lines).toHaveLength(1);
+  });
+
+  it("treats an unrecognised kind as a customer order rather than refusing", () => {
+    const { documentKind } = normalizeExtractedOrder(
+      raw({ documentKind: "something_else" }),
+      "po.pdf",
+      today,
+    );
+    expect(documentKind).toBe("customer_order");
+  });
+
+  // The prompt asks for empty lines here; the code does not rely on that.
+  it("drops every line of our own purchase order, whatever the model returned", () => {
+    const { order, warnings, documentKind } = normalizeExtractedOrder(
+      raw({
+        documentKind: "our_purchase_order",
+        customer: "DigiKey",
+        lines: [{ pn: "STM32L432KBU6", qty: 50, unitPrice: 3.4 }],
+      }),
+      "our-po.pdf",
+      today,
+    );
+    expect(documentKind).toBe("our_purchase_order");
+    expect(order.lines).toEqual([]);
+    expect(hasWarning(warnings, "הזמנת רכש שלנו לספק")).toBe(true);
+  });
+
+  it("warns without refusing when the document is something else entirely", () => {
+    const { documentKind, warnings } = normalizeExtractedOrder(
+      raw({ documentKind: "other", lines: [] }),
+      "quote.pdf",
+      today,
+    );
+    expect(documentKind).toBe("other");
+    expect(hasWarning(warnings, "לא זוהה כהזמנת לקוח")).toBe(true);
+  });
+
+  // Claimed to be a customer order, but both tells of our own PO are present:
+  // the only name found was ours, and it is not priced in shekels.
+  it("flags a claimed customer order that looks like ours to a supplier", () => {
+    const { warnings } = normalizeExtractedOrder(
+      raw({
+        documentKind: "customer_order",
+        customer: "Atrium Micro Technologies",
+        orderNumber: "PO-4501",
+        documentCurrency: "USD",
+      }),
+      "maybe-ours.pdf",
+      today,
+    );
+    expect(hasWarning(warnings, "ייתכן שזו הזמנת רכש שלנו לספק")).toBe(true);
+  });
+
+  it("does not flag our name on a shekel document — that is the normal case", () => {
+    const { warnings } = normalizeExtractedOrder(
+      raw({ customer: "Atrium Micro Technologies", orderNumber: "PO-4501" }),
+      "customer-po.pdf",
+      today,
+    );
+    expect(hasWarning(warnings, "ייתכן שזו הזמנת רכש שלנו")).toBe(false);
+    // The pre-existing guard still speaks: our name is not a customer name.
+    expect(hasWarning(warnings, "הוא שם החברה שלנו")).toBe(true);
+  });
+});
+
 describe("normalizeExtractedOrder", () => {
   it("cleans numeric strings (thousands separators and currency signs)", () => {
     const { order } = normalizeExtractedOrder(
