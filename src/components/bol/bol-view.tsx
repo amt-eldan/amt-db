@@ -1,15 +1,23 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Download, Search } from "lucide-react";
+import { ChevronDown, Download, Search } from "lucide-react";
 import { LineEditSheet } from "@/components/lines/line-edit-sheet";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { LineRow } from "@/db/queries";
 import { hasBol } from "@/lib/bol";
+import { downloadCsv, toCsv, type CsvCell } from "@/lib/csv";
 import { formatDate } from "@/lib/format";
+import { SHIPMENT_STATUS_LABELS, asShipmentStatus } from "@/lib/shipment-status";
 import { cn } from "@/lib/utils";
 import { BolTable } from "./bol-table";
 
@@ -57,42 +65,47 @@ export function BolView({ lines }: { lines: LineRow[] }) {
     };
   }, [scoped]);
 
-  function exportCsv() {
+  /**
+   * Every line that holds a bill of lading, open and archived alike, ignoring
+   * every filter on screen.
+   *
+   * Kept separate from exporting the view, because the two are genuinely
+   * different questions and only one of them was answerable before: the screen
+   * opens on "in the air" only, and the archive toggle shows open *or* closed but
+   * never both — so no combination of the controls could produce the whole list.
+   * An export named "all" that quietly hands over a subset is worse than no
+   * export, because the file looks complete.
+   */
+  const allWithBol = useMemo(() => lines.filter(hasBol), [lines]);
+
+  function exportRows(rows: LineRow[], filename: string) {
     const headers = [
-      "לקוח", "מס' הזמנה", "תאריך הזמנה", "P/N", "הזמנת רכש", "ספק",
-      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "עדכון אספקה", "צפי הגעה", "מקור", "תאריך יעד",
+      "לקוח", "מס' הזמנה", "תאריך הזמנה", "סטטוס שורה", "P/N", "הזמנת רכש", "ספק",
+      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "תאריך מסירה", "עדכון אספקה", "צפי הגעה",
+      "מקור", "ודאות", "תאריך יעד",
     ];
-    const escape = (v: string | number | null | undefined) => {
-      const s = v === null || v === undefined ? "" : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const rows = filtered.map((line) =>
-      [
-        line.customerName,
-        line.orderNumber,
-        formatDate(line.orderDate),
-        line.pn,
-        line.poNumber,
-        line.supplier,
-        line.bol,
-        line.carrier,
-        hasBol(line) ? (line.shipmentStatus ?? "") : "",
-        line.deliveryUpdate,
-        formatDate(line.shipmentEta),
-        hasBol(line) ? (line.bolSource === "auto" ? "אוטומטי" : "ידני") : "",
-        formatDate(line.contractDueDate),
-      ]
-        .map(escape)
-        .join(","),
-    );
-    const csv = "﻿" + [headers.join(","), ...rows].join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "שטרי-מטען.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    const body: CsvCell[][] = rows.map((line) => [
+      line.customerName,
+      line.orderNumber,
+      formatDate(line.orderDate),
+      line.isOpen ? "פתוחה" : "בארכיון",
+      line.pn,
+      line.poNumber,
+      line.supplier,
+      line.bol,
+      line.carrier,
+      // The Hebrew label, not the raw enum: a person reads this file.
+      hasBol(line) ? statusLabel(line.shipmentStatus) : "",
+      formatDate(line.deliveredAt),
+      line.deliveryUpdate,
+      formatDate(line.shipmentEta),
+      hasBol(line) ? (line.bolSource === "auto" ? "אוטומטי" : "ידני") : "",
+      // Only meaningful on an automatic fill, and worth having: a low value is a
+      // number the matcher was unsure of, and this file is where an audit starts.
+      line.bolSource === "auto" ? line.bolConfidence : "",
+      formatDate(line.contractDueDate),
+    ]);
+    downloadCsv(filename, toCsv(headers, body));
   }
 
   return (
@@ -111,10 +124,28 @@ export function BolView({ lines }: { lines: LineRow[] }) {
               הצג ארכיון
             </label>
           </div>
-          <Button variant="outline" className="gap-1" onClick={exportCsv} disabled={filtered.length === 0}>
-            <Download className="size-4" />
-            ייצוא CSV
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="gap-1" disabled={allWithBol.length === 0}>
+                <Download className="size-4" />
+                ייצוא CSV
+                <ChevronDown className="size-4 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            {/* Each scope carries its row count, so which file is the complete
+                one is visible before clicking rather than after opening it. */}
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => exportRows(allWithBol, "שטרי-מטען-הכל.csv")}>
+                כל שטרי המטען ({allWithBol.length})
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={filtered.length === 0}
+                onSelect={() => exportRows(filtered, "שטרי-מטען-מסונן.csv")}
+              >
+                מה שמוצג כרגע ({filtered.length})
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -194,6 +225,12 @@ function isInAir(line: LineRow): boolean {
   if (line.shipmentStatus === "delivered") return false;
   if (line.manualStatus === "הגיע") return false;
   return true;
+}
+
+/** The Hebrew label for a shipment status; empty for one that was never classified. */
+function statusLabel(status: string | null): string {
+  const known = asShipmentStatus(status);
+  return known ? SHIPMENT_STATUS_LABELS[known] : "";
 }
 
 function StatCard({ label, value, alert }: { label: string; value: number; alert?: boolean }) {

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { LineRow } from "@/db/queries";
+import { downloadCsv, toCsv, type CsvCell } from "@/lib/csv";
 import { formatDate, formatILS, formatMonth } from "@/lib/format";
 import { lineProfit, lineValue } from "@/lib/profit";
 import {
@@ -110,46 +111,31 @@ export function MonthlyView({
       "שער יציג", "תאריך השער", "משלוח", "סך מכירה", "רווח",
       "שטר מטען", "בלדר", "סטטוס משלוח", "תאריך מסירה", "הערות",
     ];
-    const escape = (v: string | number | null | undefined) => {
-      const s = v === null || v === undefined ? "" : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const lines = computed.map((row) =>
-      [
-        row.customerName,
-        row.orderNumber,
-        formatDate(row.receivedDate),
-        row.orderDate === null ? "מועד קליטה" : "מסמך ההזמנה",
-        row.isOpen ? "פתוחה" : "סגורה",
-        row.pn,
-        row.supplier,
-        row.poNumber,
-        row.qty,
-        row.unitPrice,
-        row.buyPrice,
-        row.buyPriceUsd,
-        row.fxRate,
-        row.fxRateDate,
-        row.shippingCost,
-        row.sale?.toFixed(2),
-        row.profit === null ? "ממתין" : row.profit.toFixed(2),
-        row.bol,
-        row.carrier,
-        shipmentStatusLabel(row.shipmentStatus),
-        row.deliveredAt,
-        row.notes,
-      ]
-        .map(escape)
-        .join(","),
-    );
-    const csv = "﻿" + [headers.join(","), ...lines].join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `סיכום-${selected}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const body: CsvCell[][] = computed.map((row) => [
+      row.customerName,
+      row.orderNumber,
+      formatDate(row.receivedDate),
+      row.orderDate === null ? "מועד קליטה" : "מסמך ההזמנה",
+      row.isOpen ? "פתוחה" : "סגורה",
+      row.pn,
+      row.supplier,
+      row.poNumber,
+      row.qty,
+      row.unitPrice,
+      row.buyPrice,
+      row.buyPriceUsd,
+      row.fxRate,
+      row.fxRateDate,
+      row.shippingCost,
+      row.sale?.toFixed(2),
+      row.profit === null ? "ממתין" : row.profit.toFixed(2),
+      row.bol,
+      row.carrier,
+      shipmentStatusLabel(row.shipmentStatus),
+      row.deliveredAt,
+      row.notes,
+    ]);
+    downloadCsv(`סיכום-${selected}.csv`, toCsv(headers, body));
   }
 
   return (
