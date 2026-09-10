@@ -51,6 +51,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
         line.carrier,
         // Searchable now that it is on screen: "נתקע במכס" is a thing to look for.
         line.deliveryUpdate,
+        line.shipmentStatusText,
       ].some((v) => v?.toLowerCase().includes(q));
     });
   }, [scoped, search, missingOnly, inAirOnly]);
@@ -81,8 +82,8 @@ export function BolView({ lines }: { lines: LineRow[] }) {
   function exportRows(rows: LineRow[], filename: string) {
     const headers = [
       "לקוח", "מס' הזמנה", "תאריך הזמנה", "סטטוס שורה", "P/N", "הזמנת רכש", "ספק",
-      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "תאריך מסירה", "עדכון אספקה", "צפי הגעה",
-      "מקור", "ודאות", "תאריך יעד",
+      "שטר מטען", "חברת הובלה", "סטטוס משלוח", "תיאור מהמוביל", "תאריך מסירה",
+      "עדכון אספקה", "צפי הגעה", "מקור", "ודאות", "תאריך יעד",
     ];
     const body: CsvCell[][] = rows.map((line) => [
       line.customerName,
@@ -96,6 +97,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
       line.carrier,
       // The Hebrew label, not the raw enum: a person reads this file.
       hasBol(line) ? statusLabel(line.shipmentStatus) : "",
+      line.shipmentStatusText,
       formatDate(line.deliveredAt),
       line.deliveryUpdate,
       formatDate(line.shipmentEta),
@@ -159,7 +161,7 @@ export function BolView({ lines }: { lines: LineRow[] }) {
         <div className="relative flex-1">
           <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
           <Input
-            placeholder="חיפוש לקוח / מס' הזמנה / P/N / הזמנת רכש / ספק / שטר מטען / עדכון אספקה..."
+            placeholder="חיפוש לקוח / מס' הזמנה / P/N / הזמנת רכש / ספק / שטר מטען / סטטוס..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="ps-9"

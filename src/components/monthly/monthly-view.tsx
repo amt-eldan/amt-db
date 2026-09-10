@@ -109,7 +109,7 @@ export function MonthlyView({
       "לקוח", "מס' הזמנה", "תאריך קבלת ההזמנה", "מקור התאריך", "סטטוס", "P/N", "ספק",
       "הזמנת רכש", "כמות", "מחיר מכירה ליח'", "מחיר קנייה ליח' (₪)", "מחיר קנייה ליח' ($)",
       "שער יציג", "תאריך השער", "משלוח", "סך מכירה", "רווח",
-      "שטר מטען", "בלדר", "סטטוס משלוח", "תאריך מסירה", "הערות",
+      "שטר מטען", "בלדר", "סטטוס משלוח", "תיאור מהמוביל", "תאריך מסירה", "הערות",
     ];
     const body: CsvCell[][] = computed.map((row) => [
       row.customerName,
@@ -132,6 +132,7 @@ export function MonthlyView({
       row.bol,
       row.carrier,
       shipmentStatusLabel(row.shipmentStatus),
+      row.shipmentStatusText,
       row.deliveredAt,
       row.notes,
     ]);

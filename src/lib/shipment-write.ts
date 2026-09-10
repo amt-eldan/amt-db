@@ -18,9 +18,17 @@
  *    that spends three weeks in transit would otherwise leave forty identical rows
  *    in audit_log and make the real transitions impossible to find.
  *
- * `delivery_update` is filled only while it is empty — the same rule the email
- * path applies — because that field is where a human writes a note, and an
- * unattended run must not talk over them.
+ * The carrier's own wording goes to two different places, and the difference is
+ * the whole point. `shipment_status_text` is **always replaced** — it is this
+ * run's reading of the tracking page, and next run's reading supersedes it.
+ * `delivery_update` is filled **only while it is empty**, because that field is
+ * where a person writes a note and an unattended run must not talk over them.
+ *
+ * Both used to be the same column, and that quietly lost every reading after the
+ * first: the fill-only-when-empty rule cannot tell a human's note from this
+ * function's own write from last Tuesday, so it protected its own stale text. The
+ * normalized enum kept moving while the prose froze, which is why a shipment could
+ * read "נמסר" on screen next to three-week-old carrier wording.
  *
  * Callers own authentication. Revalidation happens here, once, and only when
  * something was actually written.
@@ -148,7 +156,12 @@ async function buildShipmentFields(
   if (update.carrier && !line.carrier) fields.carrier = update.carrier;
   if (update.etaDate) fields.shipmentEta = update.etaDate;
 
-  // Only ever fill a human's note while it is still empty.
+  // The carrier's latest wording, always. This is the field the screens show for
+  // "what does the carrier actually say", and a reading that is not replaced is a
+  // reading that is wrong.
+  if (update.statusText) fields.shipmentStatusText = update.statusText;
+
+  // And a human's note, only ever filled while it is still empty.
   if (update.statusText && (!line.deliveryUpdate || line.deliveryUpdate.trim() === "")) {
     fields.deliveryUpdate = update.statusText;
   }

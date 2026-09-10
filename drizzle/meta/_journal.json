@@ -57,6 +57,13 @@
       "when": 1787248419765,
       "tag": "0007_thick_post",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789030756036,
+      "tag": "0008_lumpy_punisher",
+      "breakpoints": true
     }
   ]
 }

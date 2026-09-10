@@ -78,6 +78,17 @@ export const orderLines = pgTable(
     // bill of lading only means a box left a warehouse.
     shipmentStatus: text("shipment_status"), // NULL (unknown) | see SHIPMENT_STATUSES
     shipmentStatusAt: timestamp("shipment_status_at", { withTimezone: true }),
+    // The carrier's own wording for that state — "In transit - Departed Facility,
+    // Cologne", "Delivered - Signed for by: E.LEVI". Refreshed on every check.
+    //
+    // Separate from `delivery_update` because the two have opposite lifecycles,
+    // and sharing one column silently lost this text: `delivery_update` is a
+    // person's note, so an unattended run may only fill it while it is empty —
+    // which meant the first status a shipment ever reported was the last one the
+    // screen ever showed, while every later reading was dropped. The enum above
+    // kept moving, the prose did not. A field that must be replaced twice a day
+    // cannot live behind a rule designed to protect something written once.
+    shipmentStatusText: text("shipment_status_text"),
     shipmentEta: date("shipment_eta"),
     // The date the carrier says the goods were handed over. Distinct from
     // shipment_status_at, which is when *we looked* — and it is this date, not

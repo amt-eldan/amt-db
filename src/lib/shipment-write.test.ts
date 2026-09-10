@@ -41,6 +41,7 @@ function line(over: Partial<OrderLine> = {}): OrderLine {
     shipmentEta: null,
     deliveredAt: null,
     deliveryUpdate: null,
+    shipmentStatusText: null,
     buyPrice: null,
     buyPriceUsd: null,
     fxRate: null,
@@ -105,7 +106,14 @@ describe("writeShipmentUpdates", () => {
   // A twice-daily run over a shipment that spends three weeks in transit would
   // otherwise leave forty identical audit rows and bury the real transitions.
   it("writes nothing when nothing changed", async () => {
-    rows.set(42, line({ shipmentStatus: "in_transit", deliveryUpdate: "In transit" }));
+    rows.set(
+      42,
+      line({
+        shipmentStatus: "in_transit",
+        deliveryUpdate: "In transit",
+        shipmentStatusText: "In transit",
+      }),
+    );
     const summary = await writeShipmentUpdates([
       update({ status: "in_transit", statusText: "In transit" }),
     ]);
@@ -132,6 +140,56 @@ describe("writeShipmentUpdates", () => {
     rows.set(42, line());
     await writeShipmentUpdates([update({ statusText: "In transit — Cologne" })]);
     expect(writtenFields()).toMatchObject({ deliveryUpdate: "In transit — Cologne" });
+  });
+
+  // The regression this column exists for. Sharing delivery_update meant the
+  // fill-only-when-empty rule protected this function's own earlier write: the
+  // first reading a shipment ever got was the last one the screen ever showed,
+  // while the enum went on moving. The prose has to be replaceable.
+  it("replaces the carrier's wording on every check", async () => {
+    rows.set(
+      42,
+      line({
+        shipmentStatus: "in_transit",
+        deliveryUpdate: "In transit — Leipzig",
+        shipmentStatusText: "In transit — Leipzig",
+      }),
+    );
+    await writeShipmentUpdates([
+      update({ status: "in_transit", statusText: "In transit — Cologne" }),
+    ]);
+    expect(writtenFields()).toMatchObject({ shipmentStatusText: "In transit — Cologne" });
+  });
+
+  it("replaces the carrier's wording even behind a human's delivery note", async () => {
+    rows.set(42, line({ deliveryUpdate: "דיברתי עם הספק, מגיע ברביעי" }));
+    await writeShipmentUpdates([update({ statusText: "Held at customs" })]);
+    const fields = writtenFields();
+    expect(fields).toMatchObject({ shipmentStatusText: "Held at customs" });
+    expect(fields).not.toHaveProperty("deliveryUpdate");
+  });
+
+  it("counts the carrier's wording as a real change", async () => {
+    // A human's note already there, so the wording is the only field that can move.
+    rows.set(
+      42,
+      line({
+        shipmentStatus: "in_transit",
+        shipmentStatusText: "Departed Leipzig",
+        deliveryUpdate: "ההערה שלי",
+      }),
+    );
+    const summary = await writeShipmentUpdates([
+      update({ status: "in_transit", statusText: "Arrived Cologne" }),
+    ]);
+    expect(summary).toMatchObject({ written: 1, unchanged: 0 });
+    expect(summary.results[0].changed).toEqual(["shipmentStatusText"]);
+  });
+
+  it("leaves the carrier's wording alone when the update carries none", async () => {
+    rows.set(42, line({ shipmentStatusText: "Departed Leipzig" }));
+    await writeShipmentUpdates([update({ etaDate: "2026-09-01" })]);
+    expect(writtenFields()).not.toHaveProperty("shipmentStatusText");
   });
 
   it("backfills the carrier only when we do not know it", async () => {

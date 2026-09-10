@@ -51,6 +51,8 @@ export interface LineRow {
   bolConfidence: string | null;
   shipmentStatus: string | null;
   shipmentStatusAt: Date | null;
+  /** The carrier's own wording, refreshed on every check. See schema.ts. */
+  shipmentStatusText: string | null;
   shipmentEta: string | null;
   deliveredAt: string | null;
   buyPriceUsd: string | null;
@@ -107,6 +109,7 @@ const lineColumns = {
   bolConfidence: orderLines.bolConfidence,
   shipmentStatus: orderLines.shipmentStatus,
   shipmentStatusAt: orderLines.shipmentStatusAt,
+  shipmentStatusText: orderLines.shipmentStatusText,
   shipmentEta: orderLines.shipmentEta,
   deliveredAt: orderLines.deliveredAt,
   buyPriceUsd: orderLines.buyPriceUsd,
@@ -302,6 +305,8 @@ export interface ShipmentWorklistRow {
   contractDueDate: string | null;
   shipmentStatus: string | null;
   shipmentStatusAt: Date | null;
+  /** What the carrier said last time, so an unchanged reading is recognisable. */
+  shipmentStatusText: string | null;
   shipmentEta: string | null;
   deliveredAt: string | null;
   buyPriceUsd: string | null;
@@ -335,6 +340,7 @@ export async function getShipmentWorklist(limit = 200): Promise<ShipmentWorklist
       contractDueDate: orderLines.contractDueDate,
       shipmentStatus: orderLines.shipmentStatus,
       shipmentStatusAt: orderLines.shipmentStatusAt,
+      shipmentStatusText: orderLines.shipmentStatusText,
       shipmentEta: orderLines.shipmentEta,
       deliveredAt: orderLines.deliveredAt,
       buyPriceUsd: orderLines.buyPriceUsd,

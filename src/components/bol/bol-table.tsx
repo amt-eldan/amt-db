@@ -126,6 +126,14 @@ export function BolTable({
                     עדכון: <bdi dir="ltr">{formatTimestamp(row.shipmentStatusAt)}</bdi>
                   </span>
                 )}
+                {row.shipmentStatusText && (
+                  <span className="col-span-2 flex gap-1 min-w-0">
+                    <span className="shrink-0">המוביל:</span>
+                    <span className="min-w-0 flex-1" dir="ltr">
+                      <ClampedText text={row.shipmentStatusText} lines="line-clamp-2" />
+                    </span>
+                  </span>
+                )}
                 {row.deliveryUpdate && (
                   <span className="col-span-2 flex gap-1 min-w-0">
                     <span className="shrink-0">אספקה:</span>
@@ -170,24 +178,34 @@ function ShipmentStatusBadge({ row }: { row: LineRow }) {
     : SHIPMENT_STATUS_UNKNOWN_LABEL;
 
   return (
-    <span className="flex flex-wrap items-center gap-1">
-      <Badge
-        variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
-        className={cn(
-          "whitespace-nowrap",
-          !known && "text-muted-foreground",
-          status === "delivered" && "bg-green-500/15 text-green-700 dark:text-green-500",
+    <div className="flex flex-col gap-1 w-44">
+      <span className="flex flex-wrap items-center gap-1">
+        <Badge
+          variant={status === "exception" ? "destructive" : known ? "secondary" : "outline"}
+          className={cn(
+            "whitespace-nowrap",
+            !known && "text-muted-foreground",
+            status === "delivered" && "bg-green-500/15 text-green-700 dark:text-green-500",
+          )}
+        >
+          {label}
+        </Badge>
+        {row.deliveredAt && (
+          <span className="text-xs text-muted-foreground" dir="ltr">
+            {formatDate(row.deliveredAt)}
+          </span>
         )}
-      >
-        {label}
-      </Badge>
-      {row.deliveredAt && (
+        <LateDeliveryBadge line={row} />
+      </span>
+      {/* What the carrier itself said, under what we made of it. The badge is a
+          three-value enum, and "באוויר" does not distinguish a parcel that left
+          the warehouse this morning from one held at customs for a week. */}
+      {row.shipmentStatusText && (
         <span className="text-xs text-muted-foreground" dir="ltr">
-          {formatDate(row.deliveredAt)}
+          <ClampedText text={row.shipmentStatusText} lines="line-clamp-2" />
         </span>
       )}
-      <LateDeliveryBadge line={row} />
-    </span>
+    </div>
   );
 }
 
@@ -200,12 +218,21 @@ function ShipmentStatusBadge({ row }: { row: LineRow }) {
  * `break-words` matters: a tracking URL or a long unbroken token has no space to
  * wrap at, and without it the line would overflow its container.
  */
-function DeliveryUpdate({ text }: { text: string | null }) {
-  if (!text?.trim()) return <span className="text-muted-foreground">—</span>;
-
+/**
+ * Long text in a narrow cell: clamped, with the whole thing one click away.
+ *
+ * Shared by the human's delivery note and the carrier's own wording — both are
+ * free text of unpredictable length in a table that must not scroll sideways.
+ */
+function ClampedText({ text, lines = "line-clamp-3" }: { text: string; lines?: string }) {
   return (
     <Popover>
-      <PopoverTrigger className="block w-full text-start line-clamp-3 break-words cursor-pointer hover:underline">
+      <PopoverTrigger
+        className={cn(
+          "block w-full text-start break-words cursor-pointer hover:underline",
+          lines,
+        )}
+      >
         {text}
       </PopoverTrigger>
       <PopoverContent className="w-80 max-h-80 overflow-y-auto text-sm whitespace-pre-wrap break-words">
@@ -213,6 +240,11 @@ function DeliveryUpdate({ text }: { text: string | null }) {
       </PopoverContent>
     </Popover>
   );
+}
+
+function DeliveryUpdate({ text }: { text: string | null }) {
+  if (!text?.trim()) return <span className="text-muted-foreground">—</span>;
+  return <ClampedText text={text} />;
 }
 
 function BolSource({ row }: { row: LineRow }) {

@@ -49,7 +49,8 @@ export interface BolWriteSummary {
  *  - `evaluateBolMatch` decides: known line, still open, `bol` empty, confidence
  *    at or above the floor. Anything else is skipped with a reason.
  *  - a human's note in `delivery_update` is never overwritten — the carrier's
- *    wording only fills that field while it is still empty.
+ *    wording only fills that field while it is still empty, and always lands in
+ *    `shipment_status_text` regardless, which is what the screens read.
  *  - every write goes through `applyLineFields`, so the before/after diff and
  *    the source email land in `audit_log`.
  *
@@ -115,6 +116,9 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     if (match.statusText) {
       fields.shipmentStatus = normalizeCarrierStatus(match.statusText);
       fields.shipmentStatusAt = new Date();
+      // Always replaced; the status path refreshes this on every check. See the
+      // note in ./shipment-write for why it is not the same column as below.
+      fields.shipmentStatusText = match.statusText;
       if (!line.deliveryUpdate || line.deliveryUpdate.trim() === "") {
         fields.deliveryUpdate = match.statusText;
       }
