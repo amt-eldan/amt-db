@@ -35,8 +35,9 @@ export function BolTable({
     <>
       {/* Desktop table */}
       <div className="hidden md:block rounded-lg border overflow-x-auto">
-        <Table>
-          <TableHeader>
+        {/* Capped height so the header can stick while the rows scroll under it. */}
+        <Table containerClassName="max-h-[70vh] overflow-auto">
+          <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_var(--border)]">
             <TableRow>
               <TableHead>לקוח</TableHead>
               <TableHead>מס&apos; הזמנה</TableHead>

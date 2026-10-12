@@ -28,6 +28,12 @@ const links = [
   { href: "/intake", label: "קליטת הזמנה", icon: Inbox },
 ];
 
+// "/" only matches itself; every other link also stays lit on its sub-pages.
+function isActive(pathname: string, href: string) {
+  if (href === "/") return pathname === "/";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export function Sidebar() {
   const pathname = usePathname();
 
@@ -43,9 +49,10 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              aria-current={isActive(pathname, href) ? "page" : undefined}
               className={cn(
                 "flex items-center gap-2 rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors",
-                pathname === href
+                isActive(pathname, href)
                   ? "bg-primary text-primary-foreground"
                   : "hover:bg-muted text-foreground/80",
               )}
