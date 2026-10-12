@@ -99,3 +99,45 @@ describe("poPriceLabel", () => {
     expect(poPriceLabel(null, "USD")).toBe("—");
   });
 });
+
+describe("comparePurchaseOrder — a shekel price on a line with no rate of its own", () => {
+  const typedBeforeDelivery = {
+    buyPrice: "307.8", // a decimal in the wrong place: $10 is about ₪30.78
+    fxRateSource: "manual",
+    fxRate: null,
+    buyPriceForeign: null,
+    buyCurrency: null,
+    poUnitCost: "10",
+    poCurrency: "USD",
+  };
+
+  it("compares it through the latest published rate", () => {
+    const cmp = comparePurchaseOrder(line(typedBeforeDelivery), { USD: 3.078 });
+    expect(cmp.price).toMatchObject({ check: "mismatch", via: "ils-at-reference" });
+    expect(cmp.mismatch).toBe(true);
+  });
+
+  it("allows for the rate having moved since the price was set", () => {
+    expect(
+      comparePurchaseOrder(line({ ...typedBeforeDelivery, buyPrice: "31.5" }), { USD: 3.078 }).price
+        .check,
+    ).toBe("match");
+  });
+
+  // Typed before fx_rate_source existed: a person's price all the same.
+  it("treats a shekel price with no recorded source as typed by a person", () => {
+    const cmp = comparePurchaseOrder(
+      line({ ...typedBeforeDelivery, fxRateSource: null, buyPriceForeign: "10", buyCurrency: "USD" }),
+      { USD: 3.078 },
+    );
+    expect(cmp.price).toMatchObject({ check: "mismatch", via: "ils-at-reference" });
+  });
+
+  it("prefers the line's own rate when it has one in the order's currency", () => {
+    const cmp = comparePurchaseOrder(
+      line({ ...typedBeforeDelivery, buyPrice: "30", fxRate: "3", buyCurrency: "USD" }),
+      { USD: 3.5 },
+    );
+    expect(cmp.price).toMatchObject({ check: "match", via: "ils-at-rate" });
+  });
+});

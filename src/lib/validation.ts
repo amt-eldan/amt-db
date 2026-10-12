@@ -385,6 +385,15 @@ export const mailUpdateInput = z.object({
     .nullish()
     .transform((s) => (s ? s : null)),
   carrier: optionalText,
+  /**
+   * kind 'bol', partial shipment: the P/Ns this waybill carried. Without it the
+   * number goes on every open line of the PO still waiting for one.
+   */
+  pns: z
+    .array(z.string().trim().min(1).max(200))
+    .max(200)
+    .nullish()
+    .transform((p) => p ?? []),
   /** kind 'delay': the new date the supplier gave, when it gave one. */
   newDate: optionalIsoDate,
   confidence: z

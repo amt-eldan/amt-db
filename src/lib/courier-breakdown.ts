@@ -15,7 +15,7 @@
  */
 
 import type { CourierShipment } from "./courier-match";
-import { normalizeTracking } from "./courier-match";
+import { normalizeTracking, shipmentTotal } from "./courier-match";
 
 /** The invoice fields this reads — CourierInvoiceRow satisfies it. */
 export interface BreakdownInvoice {
@@ -192,7 +192,9 @@ export function buildBolBreakdown(
         add(
           groupKey,
           s.bol?.trim() || null,
-          toNumber(s.amount),
+          // The printed total, or what the itemized charges add up to when the
+          // courier printed only those — the same figure the allocation used.
+          shipmentTotal(s),
           {
             shipmentDate: s.shipmentDate,
             reference: s.reference,
@@ -221,9 +223,13 @@ export function buildBolBreakdown(
     const weights = accs.map((a) => Math.max(0, a.amountCents ?? 0));
     const billedCents = weights.reduce((x, y) => x + y, 0);
     const invoiceTotal = toNumber(invoice.amount);
+    // With a total on the invoice, it is spread over the waybills by their share,
+    // so charges that belong to no one shipment land somewhere and the column adds
+    // up to what was billed. Without one there is nothing to spread: each waybill's
+    // relative charge is simply its own amount — credits and discounts included.
     const spread =
-      billedCents > 0
-        ? proportional(invoiceTotal !== null ? cents(invoiceTotal) : billedCents, weights)
+      billedCents > 0 && invoiceTotal !== null
+        ? proportional(cents(invoiceTotal), weights)
         : null;
 
     accs.forEach((acc, i) => {
@@ -235,7 +241,12 @@ export function buildBolBreakdown(
         charges,
         amount: amountCents === null ? null : fromCents(amountCents),
         share: billedCents > 0 && amountCents !== null ? weights[i] / billedCents : null,
-        relative: spread && amountCents !== null ? fromCents(spread[i]) : null,
+        relative:
+          amountCents === null
+            ? null
+            : spread
+              ? fromCents(spread[i])
+              : fromCents(amountCents),
       });
     });
   }

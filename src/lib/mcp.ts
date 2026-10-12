@@ -50,7 +50,7 @@ const INSTRUCTIONS = `שרת שטרי המטען של AMT. שלוש משימות
 **ג. עדכונים מהספקים לפי הזמנת רכש**
 7. קרא ל-po_watchlist — כל הזמנות הרכש הפתוחות, עם השורות שלהן ועם מזהי המיילים שכבר דווחו (recordedEmailIds — אין צורך לדווח אותם שוב).
 8. חפש במייל לפי מספר הזמנת הרכש (בגוף המייל, בנושא ובקבצים המצורפים) מיילים מהספקים מהימים האחרונים, וסווג כל אחד:
-   - bol — הודעת משלוח / שטר מטען / AWB / tracking. שלח את המספר ב-bol (והשרת גם ירשום אותו על השורות).
+   - bol — הודעת משלוח / שטר מטען / AWB / tracking. שלח את המספר ב-bol (והשרת גם ירשום אותו על השורות הפתוחות של ההזמנה). **משלוח חלקי** שמפרט אילו פריטים נשלחו — שלח את מק"טי היצרן שלהם ב-pns, ושטר המטען יירשם רק עליהם.
    - delay — עיכוב באספקה, דחיית מועד, backorder, lead time חדש. אם נמסר מועד חדש — newDate.
    - payment_request — בקשה לתשלום: proforma, דרישת תשלום מראש, חשבונית לתשלום, תזכורת תשלום.
    מייל שאינו אחד מאלה (אישור הזמנה רגיל, פרסומת) — אל תדווח.
@@ -184,7 +184,7 @@ export const TOOLS: McpTool[] = [
     title: "דיווח עדכונים מהספקים לפי הזמנת רכש",
     description:
       "Records what a supplier wrote about a purchase order, so it shows on the management dashboard until a person handles it. Send one object or an array under `updates`. " +
-      "`kind` is one of: 'bol' (shipping notification / bill of lading / AWB — put the tracking number in `bol`; it is ALSO written onto the PO's open lines that still lack one, through the same guard as bol_submit_matches), " +
+      "`kind` is one of: 'bol' (shipping notification / bill of lading / AWB — put the tracking number in `bol`; it is ALSO written onto the PO's open lines that still lack one, through the same guard as bol_submit_matches; for a PARTIAL shipment list the P/Ns it carried in `pns` and only those lines get it), " +
       "'delay' (late delivery, rescheduled ship date, backorder — put a new date in `newDate` when the mail gives one), " +
       "'payment_request' (pro-forma, prepayment request, invoice to pay, payment reminder). Do not report anything else. " +
       "`poNumber`, `kind` and `emailId` are required; include `threadId`, `subject`, `from`, `receivedAt` (yyyy-mm-dd) and `quote` — the sentence that shows what the mail is about, which is what a person reads instead of opening the mail. " +

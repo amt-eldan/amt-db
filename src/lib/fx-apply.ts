@@ -9,7 +9,7 @@
  * doors cannot disagree about what a line's buy price means.
  */
 
-import { and, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { orderLines, type OrderLine } from "@/db/schema";
 import { isForeignCurrency } from "./currency";
@@ -110,7 +110,18 @@ export async function convertPendingBuyPrices(limit = 50): Promise<number> {
         line.deliveredAt,
       );
       if (Object.keys(fields).length === 0) continue;
-      await applyLineFields(line, fields, { source: "fx-sweep" }, "agent:fx");
+      // The rate lookup can take seconds. If someone typed a shekel price (or
+      // changed the foreign one) meanwhile, theirs is newer than this conversion.
+      const [now] = await db.select().from(orderLines).where(eq(orderLines.id, line.id));
+      if (
+        !now ||
+        now.buyPrice !== null ||
+        now.buyPriceForeign !== line.buyPriceForeign ||
+        now.buyCurrency !== line.buyCurrency
+      ) {
+        continue;
+      }
+      await applyLineFields(now, fields, { source: "fx-sweep" }, "agent:fx");
       converted++;
     }
     return converted;

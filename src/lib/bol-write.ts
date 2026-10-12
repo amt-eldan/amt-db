@@ -72,10 +72,16 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
   // Resolve every match to a line first, so the rows can be read in one query
   // below. A match whose keys name no single line is reported here and never
   // reaches the write loop.
-  const targets: { match: BolMatchInput; lineId: number; matchedBy: BolMatchedBy }[] = [];
+  const targets: {
+    match: BolMatchInput;
+    lineId: number;
+    matchedBy: BolMatchedBy;
+    /** True when one match landed on several lines (a whole purchase order). */
+    fanOut: boolean;
+  }[] = [];
   for (const match of matches) {
     if (match.lineId !== null) {
-      targets.push({ match, lineId: match.lineId, matchedBy: "lineId" });
+      targets.push({ match, lineId: match.lineId, matchedBy: "lineId", fanOut: false });
       continue;
     }
     // A PO number on its own names every open line of that purchase order — one
@@ -86,7 +92,12 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
       continue;
     }
     for (const lineId of resolution.lineIds) {
-      targets.push({ match, lineId, matchedBy: resolution.matchedBy });
+      targets.push({
+        match,
+        lineId,
+        matchedBy: resolution.matchedBy,
+        fanOut: resolution.lineIds.length > 1,
+      });
     }
   }
 
@@ -99,7 +110,7 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     for (const line of found) byId.set(line.id, line);
   }
 
-  for (const { match, lineId, matchedBy } of targets) {
+  for (const { match, lineId, matchedBy, fanOut } of targets) {
     const existing = byId.get(lineId);
 
     const verdict = evaluateBolMatch(existing, match);
@@ -139,7 +150,9 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     // shared helper the status path uses, so one line's buy price cannot mean two
     // different things depending on which door it came through.
     if (match.deliveredAt) fields.deliveredAt = match.deliveredAt;
-    const price = agentBuyPrice(line, match.buyPriceUsd);
+    // A unit price belongs to one item. When the match covers a whole purchase
+    // order it cannot say which, so it is not written on any of them.
+    const price = agentBuyPrice(line, fanOut ? null : match.buyPriceUsd);
     Object.assign(fields, price.fields);
     Object.assign(
       fields,

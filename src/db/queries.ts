@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import {
@@ -7,6 +7,7 @@ import {
   courierInvoiceFiles,
   courierInvoices,
   customers,
+  fxRates,
   mailUpdates,
   orderLines,
   orders,
@@ -408,6 +409,8 @@ export async function getPoCandidateLines(): Promise<PoCandidateLine[]> {
       buyPriceForeign: orderLines.buyPriceForeign,
       buyCurrency: orderLines.buyCurrency,
       fxRateSource: orderLines.fxRateSource,
+      poUnitCost: orderLines.poUnitCost,
+      poCurrency: orderLines.poCurrency,
       isOpen: orderLines.isOpen,
     })
     .from(orderLines)
@@ -427,6 +430,7 @@ export async function getBolCandidateLines(): Promise<BolCandidateLine[]> {
       supplier: orderLines.supplier,
       bol: orderLines.bol,
       isOpen: orderLines.isOpen,
+      manualStatus: orderLines.manualStatus,
     })
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
@@ -933,13 +937,37 @@ export interface MailUpdateRow {
   lines: MailUpdateLine[];
 }
 
-/** Recorded updates, newest mail first, each with the lines its PO is on. */
-export async function getMailUpdates(limit = 500): Promise<MailUpdateRow[]> {
-  const updates = await db
-    .select()
-    .from(mailUpdates)
-    .orderBy(sql`${mailUpdates.receivedAt} desc nulls last`, desc(mailUpdates.id))
-    .limit(limit);
+/**
+ * Recorded updates, newest mail first, each with the lines its PO is on: every
+ * one still waiting for someone — however old, since those are what the dashboard
+ * counts — and the most recent `handledLimit` that were dealt with, for history.
+ */
+export async function getMailUpdates(
+  opts: { handledLimit?: number; unhandledOnly?: boolean; limit?: number } = {},
+): Promise<MailUpdateRow[]> {
+  const newestFirst = [
+    sql`${mailUpdates.receivedAt} desc nulls last`,
+    desc(mailUpdates.id),
+  ] as const;
+  const [open, handled] = await Promise.all([
+    opts.limit
+      ? db
+          .select()
+          .from(mailUpdates)
+          .where(isNull(mailUpdates.handledAt))
+          .orderBy(...newestFirst)
+          .limit(opts.limit)
+      : db.select().from(mailUpdates).where(isNull(mailUpdates.handledAt)).orderBy(...newestFirst),
+    opts.unhandledOnly
+      ? Promise.resolve([])
+      : db
+          .select()
+          .from(mailUpdates)
+          .where(isNotNull(mailUpdates.handledAt))
+          .orderBy(...newestFirst)
+          .limit(opts.handledLimit ?? 300),
+  ]);
+  const updates = [...open, ...handled];
   if (updates.length === 0) return [];
 
   const lines = await db
@@ -994,4 +1022,22 @@ export async function getUnhandledMailUpdateCounts(): Promise<MailUpdateCounts> 
   const counts = emptyMailUpdateCounts();
   for (const row of rows) if (isMailUpdateKind(row.kind)) counts[row.kind] = row.count;
   return counts;
+}
+
+/**
+ * The newest cached representative rate per currency — a reference for comparing
+ * a hand-typed shekel price with a foreign purchase order (lib/po-compare), never
+ * for converting anything. Kept fresh by refreshReferenceRates.
+ */
+export async function getReferenceRates(): Promise<Record<string, number>> {
+  const rows = await db
+    .selectDistinctOn([fxRates.currency], { currency: fxRates.currency, rate: fxRates.rate })
+    .from(fxRates)
+    .orderBy(fxRates.currency, desc(fxRates.rateDate));
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    const rate = Number(row.rate);
+    if (Number.isFinite(rate) && rate > 0) out[row.currency] = rate;
+  }
+  return out;
 }

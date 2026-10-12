@@ -82,11 +82,20 @@ export function ShipmentAllocationTable({
   /**
    * Picking a line is the reviewer taking ownership of it, so it also settles any
    * guess on that row — whether they accepted the suggestion or replaced it.
+   *
+   * Clearing the line is a decision too, and it is recorded as one: the row becomes
+   * `manual` with no line. Left with its old `bol`/`po` tag it would read as "never
+   * placed", and the automatic second look (lib/courier-allocate) would put the cost
+   * straight back on the line the reviewer just took it off.
    */
   function setLine(index: number, lineId: number | null) {
     onChange(
       shipments.map((s, i) =>
-        i === index ? acceptGuess({ ...s, lineId }) : s,
+        i !== index
+          ? s
+          : lineId === null
+            ? { ...s, lineId: null, matchedBy: "manual" as const }
+            : acceptGuess({ ...s, lineId }),
       ),
     );
   }

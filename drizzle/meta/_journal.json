@@ -71,6 +71,13 @@
       "when": 1791809572468,
       "tag": "0009_po_currency_mail_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791827285947,
+      "tag": "0010_resync_legacy_buy_price",
+      "breakpoints": true
     }
   ]
 }

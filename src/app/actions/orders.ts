@@ -3,9 +3,11 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { customers, orderLines, orders } from "@/db/schema";
+import { customers, orderLines, orders, type OrderLine } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { allocatePendingCourierShipments } from "@/lib/courier-allocate";
+import { staleConversionFields } from "@/lib/currency";
+import { convertBuyPriceToIls } from "@/lib/fx-apply";
 import { applyLineFields } from "@/lib/line-fields";
 import { requireSession } from "@/lib/require-session";
 import { MANUAL_STATUSES } from "@/lib/status";
@@ -184,6 +186,32 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
   // A foreign price means nothing without its currency: dollars when the sheet
   // did not say (the only currency there used to be), and none once it is cleared.
   toWrite.buyCurrency = fields.buyPriceForeign ? (fields.buyCurrency ?? "USD") : null;
+
+  // A new foreign amount or currency makes the conversion beside it stale. When
+  // the shekel figure was the app's, it is redone from the new price (now if the
+  // line has a delivery date, else by the sweep once it does); when the person
+  // typed shekels in this same save, theirs stands and only a rate that no longer
+  // belongs to the currency is dropped.
+  if (fields.buyPriceForeign) {
+    const typedShekels = String(fields.buyPrice ?? "") !== String(existing.buyPrice ?? "");
+    const stale = staleConversionFields(
+      typedShekels ? { ...existing, fxRateSource: "manual", buyPrice: fields.buyPrice } : existing,
+      fields.buyPriceForeign,
+      toWrite.buyCurrency as string,
+    );
+    Object.assign(toWrite, stale);
+    if (!typedShekels && "buyPrice" in stale) {
+      Object.assign(
+        toWrite,
+        await convertBuyPriceToIls(
+          { ...existing, ...toWrite } as OrderLine,
+          fields.buyPriceForeign,
+          toWrite.buyCurrency as string,
+          fields.deliveredAt ?? existing.deliveredAt,
+        ),
+      );
+    }
+  }
 
   await applyLineFields(existing, toWrite);
   // A bill of lading or PO typed by hand is a key a courier invoice may have been

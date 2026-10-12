@@ -141,3 +141,55 @@ describe("writePurchaseOrderCosts", () => {
     expect(applyLineFields).not.toHaveBeenCalled();
   });
 });
+
+describe("writePurchaseOrderCosts — who owns the foreign price", () => {
+  // The office typed $2.53; the order says £2.35. The typing stays and the order's
+  // figure is recorded beside it, so the monthly comparison shows the gap.
+  it("keeps a foreign price nobody's purchase order set, and records the order's beside it", async () => {
+    rows.set(7, line({ buyPriceForeign: "2.53", buyCurrency: "USD" }));
+    await writePurchaseOrderCosts(input());
+    expect(written()).not.toHaveProperty("buyPriceForeign");
+    expect(written()).toMatchObject({ poUnitCost: "2.35", poCurrency: "GBP" });
+    expect(convertBuyPriceToIls).not.toHaveBeenCalled();
+  });
+
+  it("replaces a foreign price an earlier upload of the order set", async () => {
+    rows.set(
+      7,
+      line({ buyPriceForeign: "2.1", buyCurrency: "GBP", poUnitCost: "2.1", poCurrency: "GBP" }),
+    );
+    await writePurchaseOrderCosts(input());
+    expect(written()).toMatchObject({ buyPriceForeign: "2.35", buyCurrency: "GBP" });
+  });
+
+  // An ILS reading of the same order was wrong; the dollar re-upload must not
+  // leave ₪12.5 standing for a $12.5 part.
+  it("clears a shekel figure a shekel reading of the order wrote, so it is converted afresh", async () => {
+    rows.set(
+      7,
+      line({ buyPrice: "12.5", fxRateSource: "document", poUnitCost: "12.5", poCurrency: "ILS" }),
+    );
+    await writePurchaseOrderCosts(input({ currency: "USD", matches: [{ lineId: 7, unitCost: 12.5, qty: 100 }] }));
+    expect(written()).toMatchObject({
+      buyPriceForeign: "12.5",
+      buyCurrency: "USD",
+      buyPrice: null,
+      fxRateSource: null,
+    });
+    expect(convertBuyPriceToIls).toHaveBeenCalledWith(
+      expect.objectContaining({ buyPrice: null, fxRateSource: null }),
+      "12.5",
+      "USD",
+      null,
+    );
+  });
+
+  // A dollar rate left beside a euro price would make the comparison divide the
+  // typed shekels by the wrong rate.
+  it("drops a rate of another currency beside a hand-typed shekel price", async () => {
+    rows.set(7, line({ buyPrice: "40", fxRateSource: "manual", fxRate: "3.078", buyCurrency: "USD" }));
+    await writePurchaseOrderCosts(input({ currency: "EUR" }));
+    expect(written()).toMatchObject({ buyCurrency: "EUR", fxRate: null, fxRateDate: null });
+    expect(written()).not.toHaveProperty("buyPrice");
+  });
+});

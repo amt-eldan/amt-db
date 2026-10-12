@@ -221,6 +221,7 @@ function BuyPriceCell({ row }: { row: MonthlyComputedRow }) {
       )}
       <PoGap check={row.po.price.check}>
         רכש: {poPriceLabel(row.po.price.po, row.po.price.poCurrency)}
+        {row.po.price.via === "ils-at-reference" && " (בשער אחרון)"}
       </PoGap>
     </span>
   );

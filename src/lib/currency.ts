@@ -67,15 +67,19 @@ export function normalizeCurrency(raw: string | null | undefined): PurchaseCurre
  * to quote, in dollars. Our own purchase order is the better witness, so once it
  * has priced the line (`po_unit_cost` is set, in whatever currency) an agent's
  * figure is ignored rather than written over it: a stray dollar amount from a
- * shipping mail must not replace a euro price read off the order itself. Without
- * a purchase order the agent's price is recorded as before, in dollars.
+ * shipping mail must not replace a euro price read off the order itself. The same
+ * goes for a price someone typed in euros or pounds: a dollar figure is no
+ * correction of it, it is a different currency. Otherwise — no price yet, or a
+ * dollar price — the agent's figure is recorded as before, in dollars.
  */
 export function agentBuyPrice(
   line: Pick<OrderLine, "poUnitCost" | "buyPriceForeign" | "buyCurrency">,
   buyPriceUsd: string | null | undefined,
 ): { fields: Record<string, unknown>; amount: string | null; currency: string | null } {
   const purchaseOrderOwnsPrice = line.poUnitCost != null && line.poUnitCost !== "";
-  if (!buyPriceUsd || purchaseOrderOwnsPrice) {
+  const otherCurrencyPrice =
+    line.buyPriceForeign != null && line.buyPriceForeign !== "" && (line.buyCurrency ?? "USD") !== "USD";
+  if (!buyPriceUsd || purchaseOrderOwnsPrice || otherCurrencyPrice) {
     return { fields: {}, amount: line.buyPriceForeign, currency: line.buyCurrency };
   }
   const fields: Record<string, unknown> = {};
@@ -84,4 +88,33 @@ export function agentBuyPrice(
     fields.buyCurrency = "USD";
   }
   return { fields, amount: buyPriceUsd, currency: "USD" };
+}
+
+/**
+ * What has to be undone when a line's foreign price is about to change — its
+ * amount or its currency — so the shekel figure and the rate beside it keep
+ * describing the price they sit next to.
+ *
+ * A conversion is a fact about one amount in one currency. When either moves:
+ *  - a shekel figure the app produced (`boi`, or `document` from a shekel
+ *    purchase order the foreign one now replaces) is cleared with its rate, so the
+ *    new price is converted afresh instead of the old figure standing for it;
+ *  - a shekel figure a person typed stays theirs — only a rate that no longer
+ *    belongs to the price's currency goes, so nothing (the PO comparison above
+ *    all) divides euros by a dollar rate.
+ */
+export function staleConversionFields(
+  line: Pick<OrderLine, "buyPriceForeign" | "buyCurrency" | "buyPrice" | "fxRateSource">,
+  amount: string | null,
+  currency: string | null,
+): Record<string, unknown> {
+  const sameAmount = String(line.buyPriceForeign ?? "") === String(amount ?? "");
+  const sameCurrency = (line.buyCurrency ?? "USD") === (currency ?? "USD");
+  if (sameAmount && sameCurrency) return {};
+  const appMadeShekels =
+    line.buyPrice == null || line.fxRateSource === "boi" || line.fxRateSource === "document";
+  if (appMadeShekels) {
+    return { buyPrice: null, fxRate: null, fxRateDate: null, fxRateSource: null };
+  }
+  return sameCurrency ? {} : { fxRate: null, fxRateDate: null };
 }

@@ -30,7 +30,7 @@ import { and, isNotNull, sql } from "drizzle-orm";
 import { neonConfig, Pool } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import ws from "ws";
-import { orderLines } from "../src/db/schema";
+import { auditLog, orderLines } from "../src/db/schema";
 import { convertToIls } from "../src/lib/fx";
 import { representativeRateOn } from "../src/lib/fx-fetch";
 import { convertBuyPriceToIls } from "../src/lib/fx-apply";
@@ -109,6 +109,20 @@ async function main() {
           .update(orderLines)
           .set({ ...fields, updatedAt: new Date() })
           .where(sql`${orderLines.id} = ${line.id}`);
+        // Like every other write to a line: the before/after goes to audit_log, so
+        // a corrected profit can be traced back to this run.
+        const diff: Record<string, unknown> = { source: { script: "fx:backfill" } };
+        for (const [k, v] of Object.entries(fields)) {
+          const before = line[k as keyof typeof line];
+          if (String(before ?? "") !== String(v ?? "")) diff[k] = { from: before, to: v };
+        }
+        await db.insert(auditLog).values({
+          entity: "order_line",
+          entityId: line.id,
+          action: "update",
+          actor: "agent:fx-backfill",
+          diff,
+        });
       }
     }
 

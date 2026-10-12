@@ -31,7 +31,8 @@ import { orderLines, type OrderLine } from "@/db/schema";
 import { allocatePendingCourierShipments } from "./courier-allocate";
 import { convertBuyPriceToIls } from "./fx-apply";
 import { applyLineFields } from "./line-fields";
-import { buyPriceIsHumanOwned, evaluatePoWrite } from "./po-match";
+import { staleConversionFields } from "./currency";
+import { buyPriceIsHumanOwned, evaluatePoWrite, foreignPriceFromPo } from "./po-match";
 import type { PoApplyInput } from "./validation";
 
 export interface PoWriteResult {
@@ -107,17 +108,32 @@ export async function writePurchaseOrderCosts(input: PoApplyInput): Promise<PoWr
         fields.fxRateDate = null;
         fields.fxRateSource = "document";
       }
-    } else {
-      fields.buyPriceForeign = unitCost;
-      fields.buyCurrency = input.currency;
+    } else if (foreignPriceFromPo(target)) {
+      // The foreign price is the document's to set: none yet, or an earlier
+      // upload's. A shekel figure converted from a different amount or currency —
+      // or a shekel purchase order's figure this one replaces — is cleared with its
+      // rate first, so the conversion below starts from this price, not the old one.
+      Object.assign(
+        fields,
+        { buyPriceForeign: unitCost, buyCurrency: input.currency },
+        staleConversionFields(target, unitCost, input.currency),
+      );
       // Converts only when the line already carries a delivery date, because the
       // rate is dated by the handover. Until then the foreign price sits on the
       // line and is converted the day the carrier confirms delivery.
       Object.assign(
         fields,
-        await convertBuyPriceToIls(target, unitCost, input.currency, target.deliveredAt),
+        await convertBuyPriceToIls(
+          { ...target, ...fields } as OrderLine,
+          unitCost,
+          input.currency,
+          target.deliveredAt,
+        ),
       );
     }
+    // Otherwise a person (or the tracking agent) set a foreign price that is not
+    // this order's. It stays; po_unit_cost above is what the monthly comparison
+    // holds it against, so a disagreement shows instead of being written over.
 
     const changed = Object.keys(fields).filter(
       (k) => String(target[k as keyof OrderLine] ?? "") !== String(fields[k] ?? ""),

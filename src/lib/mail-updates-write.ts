@@ -12,10 +12,15 @@
  *    dashboard.
  *  - **Once per mail.** (mail, PO, kind) is unique and the insert is
  *    `on conflict do nothing`, so a mail read on every run is recorded once.
+ *  - **Stored under the PO's key** (`poKey`: no separators, no "PO" prefix), so the
+ *    same mail reported against "PO-4500012345" and "4500012345" is one row.
  *  - **A bill of lading goes through `writeBolMatches`**, with the PO number as
  *    the key — the same gate every other door uses, so it never overwrites a
- *    number already on a line, and one PO's waybill lands on all of its open
- *    lines that are still waiting for one (see resolveBolLines).
+ *    number already on a line. Without `pns` the waybill lands on the PO's open
+ *    lines still waiting for one; with `pns` (a partial shipment) only on those
+ *    items; and a waybill already on part of the PO is not spread to the rest
+ *    (see resolveBolLines). It is written when the mail is first recorded, not on
+ *    every re-report — a number a person removed must not come back by itself.
  */
 
 import { revalidatePath } from "next/cache";
@@ -51,12 +56,7 @@ export async function recordMailUpdates(
   source: "agent" | "sync" = "agent",
 ): Promise<MailUpdateSummary> {
   const lines = await getPoLineKeys();
-  const poByKey = new Map<string, string>();
-  for (const line of lines) {
-    const k = poKey(line.poNumber);
-    // Prefer the spelling of an open line, so the stored PO reads like the screen.
-    if (k && (!poByKey.has(k) || line.isOpen)) poByKey.set(k, line.poNumber);
-  }
+  const knownPos = new Set(lines.map((line) => poKey(line.poNumber)).filter(Boolean));
 
   const actor: Actor = source === "agent" ? "agent:mail-updates" : "user";
   const results: MailUpdateResult[] = [];
@@ -64,8 +64,8 @@ export async function recordMailUpdates(
 
   for (const item of items) {
     const base = { poNumber: item.poNumber, kind: item.kind, emailId: item.emailId };
-    const poNumber = poByKey.get(poKey(item.poNumber));
-    if (!poNumber) {
+    const poNumber = poKey(item.poNumber);
+    if (!poNumber || !knownPos.has(poNumber)) {
       results.push({
         ...base,
         status: "skipped",
@@ -105,19 +105,21 @@ export async function recordMailUpdates(
       results.push({ ...base, poNumber, status: "duplicate" });
     }
 
-    // The number goes onto the lines whether or not this mail was seen before:
-    // writeBolMatches is idempotent, and a run that recorded the mail but died
-    // before writing the number must not leave it off the lines for good.
-    if (item.kind === "bol" && item.bol) {
-      const parsed = bolMatchInput.safeParse({
-        bol: item.bol,
-        poNumber,
-        carrier: item.carrier,
-        confidence: item.confidence,
-        sourceEmailId: item.emailId,
-        sourceQuote: item.quote ?? item.subject,
-      });
-      if (parsed.success) bolMatches.push(parsed.data);
+    // Only when the mail is new: on a re-report the number was already offered to
+    // the lines, and offering it again would undo a person who took it off one.
+    if (row && item.kind === "bol" && item.bol) {
+      for (const pn of item.pns.length > 0 ? item.pns : [null]) {
+        const parsed = bolMatchInput.safeParse({
+          bol: item.bol,
+          poNumber,
+          pn,
+          carrier: item.carrier,
+          confidence: item.confidence,
+          sourceEmailId: item.emailId,
+          sourceQuote: item.quote ?? item.subject,
+        });
+        if (parsed.success) bolMatches.push(parsed.data);
+      }
     }
   }
 

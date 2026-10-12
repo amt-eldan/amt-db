@@ -38,7 +38,7 @@ export default async function DashboardPage() {
     getStagedOrders(),
     getRecentActivity(8),
     getUnhandledMailUpdateCounts(),
-    getMailUpdates(30),
+    getMailUpdates({ unhandledOnly: true, limit: 6 }),
   ]);
 
   // Delivered lines priced abroad that are still waiting for the day's rate —
@@ -60,7 +60,7 @@ export default async function DashboardPage() {
     <DashboardView
       data={data}
       activity={activity}
-      mailUpdates={recentMail.filter((u) => u.handledAt === null).slice(0, 6)}
+      mailUpdates={recentMail}
       today={today.toISOString().slice(0, 10)}
     />
   );

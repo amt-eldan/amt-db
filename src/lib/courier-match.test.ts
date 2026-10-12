@@ -609,3 +609,91 @@ describe("placeUnplacedShipments", () => {
     });
   });
 });
+
+describe("placeUnplacedShipments — a person's decision stands", () => {
+  const option = (over: Partial<CourierLineOption> & { lineId: number }): CourierLineOption => ({
+    orderNumber: `ORD-${over.lineId}`,
+    customerName: "Ness-Tech",
+    pn: null,
+    poNumber: null,
+    supplier: null,
+    bol: null,
+    shippingCost: null,
+    orderDate: "2026-08-01",
+    isOpen: true,
+    ...over,
+  });
+  const row = (over: Partial<CourierShipment> = {}): CourierShipment => ({
+    bol: "X1",
+    reference: null,
+    customsDeclaration: null,
+    shipper: null,
+    shipmentDate: null,
+    description: null,
+    amount: "150.00",
+    charges: [],
+    lineId: null,
+    matchedBy: null,
+    ...over,
+  });
+  const lines = [option({ lineId: 1, bol: "X1" }), option({ lineId: 2, bol: "X1" })];
+
+  // The reviewer took line 2 off a split and approved. The second look must not
+  // put it back (and charge line 1 twice) on the next page load.
+  it("leaves a row the reviewer cleared, whatever key once placed it", () => {
+    const shipments = [
+      row({ lineId: 1, matchedBy: "bol" }),
+      row({ lineId: null, matchedBy: "bol" }), // cleared before 'manual' was recorded
+      row({ lineId: null, matchedBy: "manual" }), // cleared now
+    ];
+    expect(placeUnplacedShipments(shipments, lines, { allowGuess: false })).toEqual({
+      shipments,
+      placed: 0,
+    });
+  });
+
+  // A shipping cost typed by hand has no allocation behind it; charging that line
+  // automatically would replace it with the allocation sum.
+  it("does not place a shipment onto a line whose cost was typed by hand", () => {
+    const result = placeUnplacedShipments([row({ amount: "300.00" })], lines, {
+      allowGuess: false,
+      blockedLineIds: new Set([2]),
+    });
+    expect(result.placed).toBe(0);
+  });
+});
+
+describe("matchShipmentsToLines — purchase-order spellings", () => {
+  it("finds a line stored as 4500012345 from an invoice quoting PO 4500012345", () => {
+    const line: CourierLineOption = {
+      lineId: 1,
+      orderNumber: "5975",
+      customerName: "Ness-Tech",
+      pn: null,
+      poNumber: "4500012345",
+      supplier: null,
+      bol: null,
+      shippingCost: null,
+      orderDate: "2026-08-01",
+      isOpen: true,
+    };
+    const [placed] = matchShipmentsToLines(
+      [
+        {
+          bol: null,
+          reference: "PO 4500012345",
+          customsDeclaration: null,
+          shipper: null,
+          shipmentDate: null,
+          description: null,
+          amount: "20.00",
+          charges: [],
+          lineId: null,
+          matchedBy: null,
+        },
+      ],
+      [line],
+    );
+    expect(placed).toMatchObject({ lineId: 1, matchedBy: "po" });
+  });
+});

@@ -36,6 +36,9 @@ export interface PoCandidateLine {
   buyPriceForeign: string | null;
   buyCurrency: string | null;
   fxRateSource: string | null;
+  /** What an earlier upload of a purchase order recorded — see foreignPriceFromPo. */
+  poUnitCost?: string | null;
+  poCurrency?: string | null;
   isOpen: boolean;
 }
 
@@ -69,6 +72,24 @@ export function buyPriceIsHumanOwned(
   line: Pick<PoCandidateLine, "buyPrice" | "fxRateSource">,
 ): boolean {
   return line.buyPrice !== null && line.buyPrice !== "" && line.fxRateSource !== "boi";
+}
+
+/**
+ * True when the line's foreign buy price is nobody's but a purchase order's: there
+ * is none yet, or it is exactly what an earlier upload recorded. Anything else was
+ * typed by a person (or quoted by the tracking agent), and the upload records the
+ * order's figure beside it rather than over it — so the monthly comparison can
+ * still show where the two disagree.
+ */
+export function foreignPriceFromPo(
+  line: Pick<PoCandidateLine, "buyPriceForeign" | "buyCurrency" | "poUnitCost" | "poCurrency">,
+): boolean {
+  if (line.buyPriceForeign == null || line.buyPriceForeign === "") return true;
+  if (line.poUnitCost == null || line.poUnitCost === "") return false;
+  return (
+    Number(line.poUnitCost) === Number(line.buyPriceForeign) &&
+    (line.poCurrency ?? null) === (line.buyCurrency ?? "USD")
+  );
 }
 
 /**
@@ -154,7 +175,8 @@ export type PoWriteVerdict = { write: true; warnings: string[] } | { write: fals
 export type PoWriteTarget = Pick<
   PoCandidateLine,
   "isOpen" | "poNumber" | "qty" | "buyPrice" | "fxRateSource"
->;
+> &
+  Partial<Pick<PoCandidateLine, "buyPriceForeign" | "buyCurrency" | "poUnitCost" | "poCurrency">>;
 
 export function evaluatePoWrite(
   poNumber: string,
@@ -183,6 +205,20 @@ export function evaluatePoWrite(
   if (buyPriceIsHumanOwned(line) && line.fxRateSource !== "document") {
     warnings.push(
       `מחיר הקנייה בשקלים (${line.buyPrice}) הוזן ידנית ולא יידרס — מחיר הזמנת הרכש יירשם לצידו להשוואה`,
+    );
+  }
+  if (
+    line.buyPriceForeign != null &&
+    line.buyPriceForeign !== "" &&
+    !foreignPriceFromPo({
+      buyPriceForeign: line.buyPriceForeign,
+      buyCurrency: line.buyCurrency ?? null,
+      poUnitCost: line.poUnitCost ?? null,
+      poCurrency: line.poCurrency ?? null,
+    })
+  ) {
+    warnings.push(
+      `מחיר קנייה במטבע זר כבר הוזן בשורה (${line.buyPriceForeign} ${line.buyCurrency ?? "USD"}) ולא יוחלף — מחיר הזמנת הרכש יירשם לצידו, ופער יוצג בסיכום החודשי`,
     );
   }
   if (poLine.qty !== null && line.qty !== null && Number(line.qty) !== poLine.qty) {

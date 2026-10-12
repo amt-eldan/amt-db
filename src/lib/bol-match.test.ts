@@ -236,3 +236,34 @@ describe("resolveBolLines", () => {
     });
   });
 });
+
+describe("resolveBolLines — what the PO-wide fan-out leaves alone", () => {
+  const onPo = (over: Partial<BolCandidateLine> & { lineId: number }) =>
+    candidate({ poNumber: "4500012345", pn: `PN-${over.lineId}`, ...over });
+
+  it("skips lines a person marked as arrived", () => {
+    const lines = [onPo({ lineId: 1, manualStatus: "הגיע" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toEqual({
+      lineIds: [2],
+      matchedBy: "poNumber",
+    });
+  });
+
+  // Item X was written per P/N a moment ago; the PO-wide report of the same mail
+  // must not hand X's waybill to item Y, which is still waiting for its own.
+  it("does not spread a waybill already on part of the PO to the rest", () => {
+    const lines = [onPo({ lineId: 1, bol: "9860064911" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345", bol: "98 6006 4911" }, lines)).toEqual({
+      lineIds: [1],
+      matchedBy: "poNumber",
+    });
+  });
+
+  it("treats PO-4500012345 and 4500012345 as one purchase order", () => {
+    const lines = [onPo({ lineId: 1, poNumber: "PO-4500012345" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toMatchObject({ lineIds: [1, 2] });
+    expect(resolveBolLine({ poNumber: "PO 4500012345", pn: "PN-2" }, lines)).toMatchObject({
+      lineId: 2,
+    });
+  });
+});

@@ -51,8 +51,11 @@ export interface PoComparison {
     /** The entered figure — in `enteredCurrency`, which is the order's unless they disagree. */
     entered: number | null;
     enteredCurrency: string | null;
-    /** How the entered figure was read: as typed, or converted through the line's rate. */
-    via: "foreign" | "ils" | "ils-at-rate" | null;
+    /**
+     * How the entered figure was read: as typed; a shekel price through the line's
+     * own rate; or through the latest published rate, when the line has none yet.
+     */
+    via: "foreign" | "ils" | "ils-at-rate" | "ils-at-reference" | null;
   };
   /** True when either side disagrees — what the monthly filter and badge look at. */
   mismatch: boolean;
@@ -66,6 +69,16 @@ export interface PoComparison {
  */
 const PRICE_TOLERANCE = 0.005;
 const PRICE_TOLERANCE_AT_RATE = 0.02;
+/**
+ * Through the latest published rate rather than the line's own, the slack is wider
+ * still: that rate is from today, not from the day the price was set, and a
+ * currency moves a few percent in a month. What this is for — a decimal in the
+ * wrong place, euros typed as dollars — is far outside it.
+ */
+const PRICE_TOLERANCE_AT_REFERENCE = 0.05;
+
+/** Latest representative rate per currency (ILS per unit), for lines with none of their own. */
+export type ReferenceRates = Partial<Record<string, number>>;
 
 function close(a: number, b: number, relative: number): boolean {
   const scale = Math.max(Math.abs(a), Math.abs(b));
@@ -80,7 +93,7 @@ function compareQty(line: PoCompareLine): PoComparison["qty"] {
   return { check: Math.abs(po - entered) < 1e-9 ? "match" : "mismatch", po, entered };
 }
 
-function comparePrice(line: PoCompareLine): PoComparison["price"] {
+function comparePrice(line: PoCompareLine, referenceRates?: ReferenceRates): PoComparison["price"] {
   const po = parseNumeric(line.poUnitCost);
   const poCurrency = isPurchaseCurrency(line.poCurrency) ? line.poCurrency : null;
   const none = { po, poCurrency, entered: null, enteredCurrency: null, via: null } as const;
@@ -104,22 +117,30 @@ function comparePrice(line: PoCompareLine): PoComparison["price"] {
   }
 
   // A shekel price someone typed is the entry that matters most — it is what
-  // profit is computed from. It can only be put next to a foreign order price
-  // through a rate in that same currency, which the line carries once it has been
-  // converted (or once a rate was looked up for it).
-  if (line.fxRateSource === "manual" && ils !== null) {
-    const rateIsForPoCurrency = (line.buyCurrency ?? "USD") === poCurrency;
-    if (rate === null || rate <= 0 || !rateIsForPoCurrency) {
-      return { ...none, check: "incomparable" };
-    }
-    const entered = ils / rate;
+  // profit is computed from. "Someone" is anything the app did not produce: not a
+  // conversion ('boi') and not a shekel purchase order ('document') — which takes
+  // in prices typed before fx_rate_source existed, too. It is put next to a
+  // foreign order price through the line's own rate when the line has one in that
+  // currency, and otherwise through the latest published rate: a line typed in
+  // shekels before delivery has no rate of its own, and is exactly the line whose
+  // typo nobody would otherwise see.
+  const humanShekels =
+    ils !== null && line.fxRateSource !== "boi" && line.fxRateSource !== "document";
+  if (humanShekels) {
+    const ownRate =
+      rate !== null && rate > 0 && (line.buyCurrency ?? "USD") === poCurrency ? rate : null;
+    const reference = referenceRates?.[poCurrency] ?? null;
+    const useRate = ownRate ?? (reference !== null && reference > 0 ? reference : null);
+    if (useRate === null) return { ...none, check: "incomparable" };
+    const entered = ils! / useRate;
+    const tolerance = ownRate !== null ? PRICE_TOLERANCE_AT_RATE : PRICE_TOLERANCE_AT_REFERENCE;
     return {
       po,
       poCurrency,
       entered,
       enteredCurrency: poCurrency,
-      via: "ils-at-rate",
-      check: close(entered, po, PRICE_TOLERANCE_AT_RATE) ? "match" : "mismatch",
+      via: ownRate !== null ? "ils-at-rate" : "ils-at-reference",
+      check: close(entered, po, tolerance) ? "match" : "mismatch",
     };
   }
 
@@ -149,9 +170,12 @@ function comparePrice(line: PoCompareLine): PoComparison["price"] {
   return { ...none, check: ils === null ? "missing" : "incomparable" };
 }
 
-export function comparePurchaseOrder(line: PoCompareLine): PoComparison {
+export function comparePurchaseOrder(
+  line: PoCompareLine,
+  referenceRates?: ReferenceRates,
+): PoComparison {
   const qty = compareQty(line);
-  const price = comparePrice(line);
+  const price = comparePrice(line, referenceRates);
   return { qty, price, mismatch: qty.check === "mismatch" || price.check === "mismatch" };
 }
 

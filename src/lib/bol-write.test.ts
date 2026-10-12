@@ -266,6 +266,29 @@ describe("writeBolMatches", () => {
     expect(allocatePendingCourierShipments).toHaveBeenCalledTimes(1);
   });
 
+  // A unit price belongs to one item; a match that covers the whole PO cannot say which.
+  it("does not write one unit price onto every line of a purchase order", async () => {
+    const onPo = (lineId: number) => ({
+      lineId,
+      orderNumber: `ORD-${lineId}`,
+      pn: `PN-${lineId}`,
+      sku: null,
+      poNumber: "4500012345",
+      supplier: "Acme",
+      bol: null,
+      isOpen: true,
+    });
+    candidates.push(onPo(41), onPo(42));
+    for (const id of [41, 42]) rows.set(id, line({ id }));
+    await writeBolMatches([
+      bolMatchInput.parse({ bol: "9860064911", poNumber: "4500012345", buyPriceUsd: 41.5 }),
+    ]);
+    expect(applyLineFields).toHaveBeenCalledTimes(2);
+    for (const call of applyLineFields.mock.calls) {
+      expect(call[1]).not.toHaveProperty("buyPriceForeign");
+    }
+  });
+
   it("reports a lineId-less match it could not resolve instead of guessing", async () => {
     const summary = await writeBolMatches([
       bolMatchInput.parse({ bol: "1Z999AA10123456784", pn: "NOT-HERE" }),

@@ -160,3 +160,24 @@ describe("bestTrackingCandidate", () => {
     expect(bestTrackingCandidate([])).toBeNull();
   });
 });
+
+describe("findTrackingCandidates — the line's own numbers and look-alikes", () => {
+  // Stored as PO-4501234567, quoted bare in the mail: still the line's own number.
+  it("never returns the PO without the prefix we stored it with", () => {
+    const found = findTrackingCandidates("Your shipment 4501234567 is on its way", {
+      poNumber: "PO-4501234567",
+    });
+    expect(found.map((c) => c.bol)).not.toContain("4501234567");
+  });
+
+  // "+44 20 7946 0958" in a signature must not tie with the real waybill.
+  it("ignores an unlabelled number grouped like a DHL waybill", () => {
+    const found = findTrackingCandidates("Call us: 20 7946 0958");
+    expect(found).toEqual([]);
+  });
+
+  it("still reads a labelled grouped waybill", () => {
+    const found = findTrackingCandidates("Waybill: 98 6006 4911");
+    expect(found[0]).toMatchObject({ bol: "9860064911", carrier: "DHL" });
+  });
+});

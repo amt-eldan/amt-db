@@ -18,7 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import type { LineRow } from "@/db/queries";
 import { downloadCsv, toCsv, type CsvCell } from "@/lib/csv";
 import { formatDate, formatILS, formatMonth } from "@/lib/format";
-import { comparePurchaseOrder } from "@/lib/po-compare";
+import { comparePurchaseOrder, type ReferenceRates } from "@/lib/po-compare";
 import { lineProfit, lineValue } from "@/lib/profit";
 import {
   SHIPMENT_STATUS_LABELS,
@@ -37,10 +37,13 @@ export function MonthlyView({
   rows,
   months,
   selected,
+  referenceRates,
 }: {
   rows: LineRow[];
   months: string[];
   selected: string;
+  /** Latest rate per currency, for comparing hand-typed shekels with a foreign PO. */
+  referenceRates: ReferenceRates;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<LineRow | null>(null);
@@ -78,14 +81,17 @@ export function MonthlyView({
         ...row,
         sale: lineValue(row),
         profit: lineProfit(row),
-        po: comparePurchaseOrder(row),
+        po: comparePurchaseOrder(row, referenceRates),
       }))
       .filter((row) => !gapsOnly || row.po.mismatch);
-  }, [rows, includeOpen, search, gapsOnly]);
+  }, [rows, includeOpen, search, gapsOnly, referenceRates]);
 
   const gapsInMonth = useMemo(
-    () => rows.filter((row) => (includeOpen || !row.isOpen) && comparePurchaseOrder(row).mismatch).length,
-    [rows, includeOpen],
+    () =>
+      rows.filter(
+        (row) => (includeOpen || !row.isOpen) && comparePurchaseOrder(row, referenceRates).mismatch,
+      ).length,
+    [rows, includeOpen, referenceRates],
   );
 
   const searching = search.trim() !== "";
@@ -277,7 +283,11 @@ export function MonthlyView({
         <MonthlySummaryTable rows={computed} onEdit={setEditing} />
       )}
 
-      <LineEditSheet line={editing} onClose={() => setEditing(null)} />
+      <LineEditSheet
+        line={editing}
+        onClose={() => setEditing(null)}
+        referenceRates={referenceRates}
+      />
     </div>
   );
 }

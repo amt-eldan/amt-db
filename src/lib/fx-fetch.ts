@@ -11,6 +11,7 @@
 
 import { and, desc, eq, lte } from "drizzle-orm";
 import { db } from "@/db";
+import { FOREIGN_CURRENCIES } from "./currency";
 import { fxRates } from "@/db/schema";
 import {
   boiCurrentUrl,
@@ -169,4 +170,29 @@ function shiftDays(date: string, days: number): string {
   const d = new Date(date + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Keeps a recent rate for every purchase currency in the cache, for the monthly
+ * screen's purchase-order comparison (getReferenceRates).
+ *
+ * Only a reference: nothing is converted or stored on a line with it. Refreshed
+ * when the newest cached rate is missing or more than a few days old, so a page
+ * load costs at most three small requests once in a while. Runs in after(), and
+ * never throws.
+ */
+export async function refreshReferenceRates(today: string = israelDate()): Promise<void> {
+  for (const currency of FOREIGN_CURRENCIES) {
+    try {
+      const cached = await cachedRateOnOrBefore(today, currency);
+      const ageDays = cached
+        ? (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${cached.rateDate}T00:00:00Z`)) / 86_400_000
+        : Infinity;
+      if (ageDays <= 3) continue;
+      const current = await fetchBoiCurrent(currency);
+      if (current) await cacheObservations([current], currency, "boi");
+    } catch (error) {
+      console.error(`refreshReferenceRates: ${currency} failed`, error);
+    }
+  }
 }

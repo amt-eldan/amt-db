@@ -165,3 +165,50 @@ describe("buildBolBreakdown", () => {
     expect(result.totals.amount).toBe(0);
   });
 });
+
+describe("buildBolBreakdown — amounts the courier did not print as a total", () => {
+  // A shipment printed only as its charges costs what they add up to — the same
+  // figure the allocation used — and carries its share of the invoice.
+  it("counts a shipment by its charges when it has no printed total", () => {
+    const result = buildBolBreakdown(
+      [
+        invoice({
+          amount: "300.00",
+          shipments: [
+            shipment({ bol: "A", amount: "100.00" }),
+            shipment({
+              bol: "B",
+              amount: null,
+              charges: [
+                { label: "Fuel", amount: "150.00", kind: "fee" },
+                { label: "Tax", amount: "50.00", kind: "tax" },
+              ],
+            }),
+          ],
+        }),
+      ],
+      [],
+      lines,
+    );
+    expect(result.rows.map((r) => [r.bol, r.amount, r.relative])).toEqual([
+      ["A", 100, 100],
+      ["B", 200, 200],
+    ]);
+    expect(result.totals.amount).toBe(300);
+  });
+
+  it("without an invoice total, charges each waybill its own amount, credits included", () => {
+    const result = buildBolBreakdown(
+      [
+        invoice({
+          amount: null,
+          shipments: [shipment({ bol: "A", amount: "100.00" }), shipment({ bol: "B", amount: "-20.00" })],
+        }),
+      ],
+      [],
+      lines,
+    );
+    expect(result.rows.map((r) => r.relative)).toEqual([100, -20]);
+    expect(result.totals.relative).toBe(80);
+  });
+});

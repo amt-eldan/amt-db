@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { LineRow } from "@/db/queries";
 import { CURRENCY_LABELS, CURRENCY_SYMBOLS, FOREIGN_CURRENCIES } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
-import { comparePurchaseOrder, poPriceLabel } from "@/lib/po-compare";
+import { comparePurchaseOrder, poPriceLabel, type ReferenceRates } from "@/lib/po-compare";
 import { MANUAL_STATUSES } from "@/lib/status";
 
 const AUTO = "__auto__";
@@ -61,9 +61,12 @@ function formFrom(line: LineRow): Record<string, string> {
 export function LineEditSheet({
   line,
   onClose,
+  referenceRates,
 }: {
   line: LineRow | null;
   onClose: () => void;
+  /** Latest rate per currency, when the caller has them — see lib/po-compare. */
+  referenceRates?: ReferenceRates;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -156,7 +159,7 @@ export function LineEditSheet({
               </Select>
             </div>
           </Field>
-          {line && <PurchaseOrderFigures line={line} />}
+          {line && <PurchaseOrderFigures line={line} referenceRates={referenceRates} />}
           <Field label="עלות משלוח (₪)">
             <Input dir="ltr" inputMode="decimal" value={form.shippingCost ?? ""} onChange={(e) => set("shippingCost", e.target.value)} />
           </Field>
@@ -240,9 +243,15 @@ function Field({
  * here — they are the yardstick, and a gap against them is the point of showing
  * them.
  */
-function PurchaseOrderFigures({ line }: { line: LineRow }) {
+function PurchaseOrderFigures({
+  line,
+  referenceRates,
+}: {
+  line: LineRow;
+  referenceRates?: ReferenceRates;
+}) {
   if (line.poUnitCost === null && line.poQty === null) return null;
-  const cmp = comparePurchaseOrder(line);
+  const cmp = comparePurchaseOrder(line, referenceRates);
   return (
     <div className="col-span-2 rounded-md border bg-muted/40 px-3 py-2 text-xs flex flex-col gap-1">
       <span className="font-medium">לפי הזמנת הרכש {line.poNumber ? <bdi dir="ltr">{line.poNumber}</bdi> : null}</span>

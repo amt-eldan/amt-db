@@ -12,7 +12,7 @@
  * ./mail-updates-write.
  */
 
-import { normalizeTracking } from "./courier-match";
+import { poKey } from "./courier-match";
 
 export const MAIL_UPDATE_KINDS = ["bol", "delay", "payment_request"] as const;
 export type MailUpdateKind = (typeof MAIL_UPDATE_KINDS)[number];
@@ -27,16 +27,8 @@ export function isMailUpdateKind(value: unknown): value is MailUpdateKind {
   return typeof value === "string" && (MAIL_UPDATE_KINDS as readonly string[]).includes(value);
 }
 
-/**
- * A PO number as a comparison key: separators and case are noise, and so is a
- * "PO" someone typed in front of the digits — the supplier writes 4501234567
- * where we stored PO-4501234567, and the two are one order.
- */
-export function poKey(value: string | null | undefined): string {
-  const compact = normalizeTracking(value);
-  const core = compact.replace(/^(?:PO|P0)(?=[0-9])/, "");
-  return core.length >= 4 ? core : compact;
-}
+/** The PO comparison key — shared with the bill-of-lading resolver (courier-match). */
+export { poKey };
 
 /**
  * A link that opens the mail in Gmail, for whoever is signed in to the orders

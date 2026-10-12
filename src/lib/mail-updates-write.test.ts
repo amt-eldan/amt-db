@@ -57,9 +57,40 @@ describe("recordMailUpdates", () => {
 
     expect(first).toMatchObject({ recorded: 1, duplicates: 0 });
     expect(second).toMatchObject({ recorded: 0, duplicates: 1 });
-    // Stored under the line's own spelling of the PO.
-    expect(inserted).toEqual([expect.objectContaining({ poNumber: "PO-4500012345", source: "agent" })]);
+    // Stored under the PO's key, so the spelling a report uses cannot split it.
+    expect(inserted).toEqual([expect.objectContaining({ poNumber: "4500012345", source: "agent" })]);
     expect(audit).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats the same mail reported under another spelling of the PO as a duplicate", async () => {
+    poLines.push({ poNumber: "PO-4500012345", isOpen: true }, { poNumber: "4500012345", isOpen: true });
+    await recordMailUpdates([update({ poNumber: "PO-4500012345" })], "agent");
+    const again = await recordMailUpdates([update({ poNumber: "4500-0123-45" })], "agent");
+    expect(again).toMatchObject({ recorded: 0, duplicates: 1 });
+    expect(inserted).toHaveLength(1);
+  });
+
+  // A partial shipment names the items it carried; only those get the waybill.
+  it("narrows a partial shipment's waybill to the P/Ns it carried", async () => {
+    poLines.push({ poNumber: "4500012345", isOpen: true });
+    await recordMailUpdates(
+      [update({ kind: "bol", bol: "9860064911", pns: ["PN-A", "PN-C"] })],
+      "agent",
+    );
+    expect(writeBolMatches).toHaveBeenCalledWith([
+      expect.objectContaining({ poNumber: "4500012345", pn: "PN-A" }),
+      expect.objectContaining({ poNumber: "4500012345", pn: "PN-C" }),
+    ]);
+  });
+
+  // A person who took a wrong waybill off a line must not see it come back with
+  // the next run that happens to re-report the same mail.
+  it("offers the waybill to the lines only when the mail is first recorded", async () => {
+    poLines.push({ poNumber: "4500012345", isOpen: true });
+    const bol = update({ kind: "bol", bol: "9860064911" });
+    await recordMailUpdates([bol], "agent");
+    await recordMailUpdates([bol], "agent");
+    expect(writeBolMatches).toHaveBeenCalledTimes(1);
   });
 
   it("skips a purchase order no line carries", async () => {
