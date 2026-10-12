@@ -184,6 +184,34 @@ describe("writePurchaseOrderCosts — who owns the foreign price", () => {
     );
   });
 
+  // Read first as shekels by mistake (₪12.5), then re-uploaded correctly in dollars
+  // while the line already held a dollar price from elsewhere: the mistaken shekel
+  // figure must not stand, and the line is converted from its dollar price.
+  it("drops a mistaken shekel reading even when the foreign price stays", async () => {
+    rows.set(
+      7,
+      line({
+        buyPriceForeign: "12.5",
+        buyCurrency: "USD",
+        buyPrice: "12.5",
+        fxRateSource: "document",
+        poUnitCost: "12.5",
+        poCurrency: "ILS",
+        deliveredAt: "2026-09-30",
+      }),
+    );
+    await writePurchaseOrderCosts(
+      input({ currency: "USD", matches: [{ lineId: 7, unitCost: 12.5, qty: 100 }] }),
+    );
+    expect(written()).toMatchObject({ buyPrice: null, fxRateSource: null, poCurrency: "USD" });
+    expect(convertBuyPriceToIls).toHaveBeenCalledWith(
+      expect.objectContaining({ buyPrice: null }),
+      "12.5",
+      "USD",
+      "2026-09-30",
+    );
+  });
+
   // A dollar rate left beside a euro price would make the comparison divide the
   // typed shekels by the wrong rate.
   it("drops a rate of another currency beside a hand-typed shekel price", async () => {

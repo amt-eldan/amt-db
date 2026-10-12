@@ -259,6 +259,16 @@ describe("resolveBolLines — what the PO-wide fan-out leaves alone", () => {
     });
   });
 
+  // The item that shipped alone has since arrived (or closed); the rest of the
+  // order is still at the supplier and must not inherit its waybill.
+  it("does not spread a partial shipment's waybill once its own line arrived or closed", () => {
+    for (const done of [{ manualStatus: "הגיע" }, { isOpen: false }]) {
+      const lines = [onPo({ lineId: 1, bol: "9860064911", ...done }), onPo({ lineId: 2 })];
+      const result = resolveBolLines({ poNumber: "4500012345", bol: "9860064911" }, lines);
+      expect(result).toEqual({ lineIds: [1], matchedBy: "poNumber" });
+    }
+  });
+
   it("treats PO-4500012345 and 4500012345 as one purchase order", () => {
     const lines = [onPo({ lineId: 1, poNumber: "PO-4500012345" }), onPo({ lineId: 2 })];
     expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toMatchObject({ lineIds: [1, 2] });

@@ -28,6 +28,8 @@ export interface PoCompareLine {
   poUnitCost: string | null;
   poCurrency: string | null;
   poQty: string | null;
+  /** The latest-rate fallback is for open lines only — see comparePrice. */
+  isOpen?: boolean;
 }
 
 export type PoCheck =
@@ -129,7 +131,10 @@ function comparePrice(line: PoCompareLine, referenceRates?: ReferenceRates): PoC
   if (humanShekels) {
     const ownRate =
       rate !== null && rate > 0 && (line.buyCurrency ?? "USD") === poCurrency ? rate : null;
-    const reference = referenceRates?.[poCurrency] ?? null;
+    // Today's rate is a fair yardstick for a line still being worked on, not for
+    // one closed months ago at a rate that has since moved further than any
+    // tolerance — that would turn correct history into false gaps.
+    const reference = line.isOpen === false ? null : (referenceRates?.[poCurrency] ?? null);
     const useRate = ownRate ?? (reference !== null && reference > 0 ? reference : null);
     if (useRate === null) return { ...none, check: "incomparable" };
     const entered = ils! / useRate;

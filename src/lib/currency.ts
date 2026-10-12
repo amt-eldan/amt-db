@@ -96,12 +96,14 @@ export function agentBuyPrice(
  * describing the price they sit next to.
  *
  * A conversion is a fact about one amount in one currency. When either moves:
- *  - a shekel figure the app produced (`boi`, or `document` from a shekel
- *    purchase order the foreign one now replaces) is cleared with its rate, so the
+ *  - a shekel figure the app converted (`boi`) is cleared with its rate, so the
  *    new price is converted afresh instead of the old figure standing for it;
- *  - a shekel figure a person typed stays theirs — only a rate that no longer
- *    belongs to the price's currency goes, so nothing (the PO comparison above
- *    all) divides euros by a dollar rate.
+ *  - any other shekel figure stays — one a person typed, or one printed on our own
+ *    shekel purchase order (`document`), which no foreign figure typed beside it
+ *    overrides. Only a rate that no longer belongs to the price's currency goes,
+ *    so nothing (the PO comparison above all) divides euros by a dollar rate.
+ *    (A foreign *purchase order* replacing a shekel reading of the same order is a
+ *    different event, handled where it happens — see po-write.)
  */
 export function staleConversionFields(
   line: Pick<OrderLine, "buyPriceForeign" | "buyCurrency" | "buyPrice" | "fxRateSource">,
@@ -111,8 +113,7 @@ export function staleConversionFields(
   const sameAmount = String(line.buyPriceForeign ?? "") === String(amount ?? "");
   const sameCurrency = (line.buyCurrency ?? "USD") === (currency ?? "USD");
   if (sameAmount && sameCurrency) return {};
-  const appMadeShekels =
-    line.buyPrice == null || line.fxRateSource === "boi" || line.fxRateSource === "document";
+  const appMadeShekels = line.buyPrice == null || line.fxRateSource === "boi";
   if (appMadeShekels) {
     return { buyPrice: null, fxRate: null, fxRateDate: null, fxRateSource: null };
   }

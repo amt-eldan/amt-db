@@ -652,6 +652,14 @@ describe("placeUnplacedShipments — a person's decision stands", () => {
     });
   });
 
+  // "הוסף משלוח" on a hand-entered invoice: the waybill reached no line yet, so the
+  // row was left without one. That is not a decision, and the number arriving later
+  // must place it.
+  it("places a row added by hand once its waybill reaches a line", () => {
+    const added = row({ amount: "250.00", matchedBy: null });
+    expect(placeUnplacedShipments([added], lines, { allowGuess: false }).placed).toBe(1);
+  });
+
   // A shipping cost typed by hand has no allocation behind it; charging that line
   // automatically would replace it with the allocation sum.
   it("does not place a shipment onto a line whose cost was typed by hand", () => {

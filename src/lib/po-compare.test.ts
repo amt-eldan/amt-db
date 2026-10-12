@@ -117,6 +117,12 @@ describe("comparePurchaseOrder — a shekel price on a line with no rate of its 
     expect(cmp.mismatch).toBe(true);
   });
 
+  it("does not judge a closed line by today's rate", () => {
+    const cmp = comparePurchaseOrder(line({ ...typedBeforeDelivery, isOpen: false }), { USD: 3.078 });
+    expect(cmp.price.check).toBe("incomparable");
+    expect(cmp.mismatch).toBe(false);
+  });
+
   it("allows for the rate having moved since the price was set", () => {
     expect(
       comparePurchaseOrder(line({ ...typedBeforeDelivery, buyPrice: "31.5" }), { USD: 3.078 }).price

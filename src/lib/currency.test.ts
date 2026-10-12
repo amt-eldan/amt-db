@@ -58,9 +58,22 @@ describe("staleConversionFields", () => {
     const reset = { buyPrice: null, fxRate: null, fxRateDate: null, fxRateSource: null };
     expect(staleConversionFields(converted, "10", "EUR")).toEqual(reset);
     expect(staleConversionFields(converted, "12", "USD")).toEqual(reset);
-    expect(
-      staleConversionFields({ ...converted, fxRateSource: "document", buyPriceForeign: null }, "12.5", "USD"),
-    ).toEqual(reset);
+  });
+
+  // ₪450 printed on our own shekel purchase order is not undone by a foreign
+  // figure someone types beside it.
+  it("keeps the shekel price of a shekel purchase order", () => {
+    const fromPo = { buyPriceForeign: null, buyCurrency: null, buyPrice: "450", fxRateSource: "document" };
+    expect(staleConversionFields(fromPo, "120", "USD")).toEqual({});
+  });
+
+  it("clears the app's conversion when the foreign price is removed", () => {
+    expect(staleConversionFields(converted, null, null)).toEqual({
+      buyPrice: null,
+      fxRate: null,
+      fxRateDate: null,
+      fxRateSource: null,
+    });
   });
 
   it("keeps a shekel price a person typed, dropping only a rate of another currency", () => {

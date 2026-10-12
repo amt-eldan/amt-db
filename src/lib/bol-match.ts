@@ -250,15 +250,18 @@ export function resolveBolLines(
   );
   if (onPo.length === 0) return { lineIds: null, reason: `no line matches ${described}` };
 
+  // Looked for on every line of the PO — arrived and closed ones too: the item that
+  // shipped under this waybill may well have arrived since, and that does not make
+  // the rest of the order part of its shipment.
+  const bol = key(keys.bol);
+  const carrying = bol ? onPo.filter((line) => key(line.bol) === bol) : [];
+  if (carrying.length > 0) {
+    return { lineIds: carrying.map((line) => line.lineId), matchedBy: "poNumber" };
+  }
+
   const open = onPo.filter((line) => line.isOpen && line.manualStatus !== "הגיע");
   if (open.length === 0) {
     return { lineIds: null, reason: `no open line still waiting for tracking matches ${described}` };
-  }
-
-  const bol = key(keys.bol);
-  const carrying = bol ? open.filter((line) => key(line.bol) === bol) : [];
-  if (carrying.length > 0) {
-    return { lineIds: carrying.map((line) => line.lineId), matchedBy: "poNumber" };
   }
 
   const waiting = open.filter((line) => isBolEmpty(line));

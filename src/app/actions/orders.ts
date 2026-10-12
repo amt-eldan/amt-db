@@ -187,30 +187,29 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
   // did not say (the only currency there used to be), and none once it is cleared.
   toWrite.buyCurrency = fields.buyPriceForeign ? (fields.buyCurrency ?? "USD") : null;
 
-  // A new foreign amount or currency makes the conversion beside it stale. When
-  // the shekel figure was the app's, it is redone from the new price (now if the
-  // line has a delivery date, else by the sweep once it does); when the person
-  // typed shekels in this same save, theirs stands and only a rate that no longer
-  // belongs to the currency is dropped.
-  if (fields.buyPriceForeign) {
-    const typedShekels = String(fields.buyPrice ?? "") !== String(existing.buyPrice ?? "");
-    const stale = staleConversionFields(
-      typedShekels ? { ...existing, fxRateSource: "manual", buyPrice: fields.buyPrice } : existing,
-      fields.buyPriceForeign,
-      toWrite.buyCurrency as string,
+  // A new foreign amount or currency — or none at all — makes the conversion
+  // beside it stale. When the shekel figure was the app's conversion it is undone,
+  // and redone from the new price (now if the line has a delivery date, else by
+  // the sweep once it does); a shekel figure a person typed — in this same save or
+  // before — or one from our own shekel purchase order stands, and only a rate
+  // that no longer belongs to the currency is dropped.
+  const typedShekels = String(fields.buyPrice ?? "") !== String(existing.buyPrice ?? "");
+  const stale = staleConversionFields(
+    typedShekels ? { ...existing, fxRateSource: "manual", buyPrice: fields.buyPrice } : existing,
+    fields.buyPriceForeign ?? null,
+    (toWrite.buyCurrency as string | null) ?? null,
+  );
+  Object.assign(toWrite, stale);
+  if (!typedShekels && "buyPrice" in stale && fields.buyPriceForeign) {
+    Object.assign(
+      toWrite,
+      await convertBuyPriceToIls(
+        { ...existing, ...toWrite } as OrderLine,
+        fields.buyPriceForeign,
+        toWrite.buyCurrency as string,
+        fields.deliveredAt ?? existing.deliveredAt,
+      ),
     );
-    Object.assign(toWrite, stale);
-    if (!typedShekels && "buyPrice" in stale) {
-      Object.assign(
-        toWrite,
-        await convertBuyPriceToIls(
-          { ...existing, ...toWrite } as OrderLine,
-          fields.buyPriceForeign,
-          toWrite.buyCurrency as string,
-          fields.deliveredAt ?? existing.deliveredAt,
-        ),
-      );
-    }
   }
 
   await applyLineFields(existing, toWrite);

@@ -35,8 +35,10 @@ const emptyShipment: CourierShipmentInput = {
   amount: null,
   charges: [],
   lineId: null,
-  // A row the reviewer added by hand is their own decision from the first keystroke.
-  matchedBy: "manual",
+  // No decision yet: a row added by hand whose line is not known (the waybill has
+  // not reached any line) stays open to the automatic second look, which places it
+  // once the number arrives. Picking or clearing a line is what records a decision.
+  matchedBy: null,
 };
 
 /**
@@ -95,7 +97,7 @@ export function ShipmentAllocationTable({
           ? s
           : lineId === null
             ? { ...s, lineId: null, matchedBy: "manual" as const }
-            : acceptGuess({ ...s, lineId }),
+            : acceptGuess({ ...s, lineId, matchedBy: s.matchedBy ?? "manual" }),
       ),
     );
   }
