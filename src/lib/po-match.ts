@@ -33,8 +33,12 @@ export interface PoCandidateLine {
   poNumber: string | null;
   supplier: string | null;
   buyPrice: string | null;
-  buyPriceUsd: string | null;
+  buyPriceForeign: string | null;
+  buyCurrency: string | null;
   fxRateSource: string | null;
+  /** What an earlier upload of a purchase order recorded — see foreignPriceFromPo. */
+  poUnitCost?: string | null;
+  poCurrency?: string | null;
   isOpen: boolean;
 }
 
@@ -68,6 +72,24 @@ export function buyPriceIsHumanOwned(
   line: Pick<PoCandidateLine, "buyPrice" | "fxRateSource">,
 ): boolean {
   return line.buyPrice !== null && line.buyPrice !== "" && line.fxRateSource !== "boi";
+}
+
+/**
+ * True when the line's foreign buy price is nobody's but a purchase order's: there
+ * is none yet, or it is exactly what an earlier upload recorded. Anything else was
+ * typed by a person (or quoted by the tracking agent), and the upload records the
+ * order's figure beside it rather than over it — so the monthly comparison can
+ * still show where the two disagree.
+ */
+export function foreignPriceFromPo(
+  line: Pick<PoCandidateLine, "buyPriceForeign" | "buyCurrency" | "poUnitCost" | "poCurrency">,
+): boolean {
+  if (line.buyPriceForeign == null || line.buyPriceForeign === "") return true;
+  if (line.poUnitCost == null || line.poUnitCost === "") return false;
+  return (
+    Number(line.poUnitCost) === Number(line.buyPriceForeign) &&
+    (line.poCurrency ?? null) === (line.buyCurrency ?? "USD")
+  );
 }
 
 /**
@@ -144,15 +166,17 @@ export type PoWriteVerdict = { write: true; warnings: string[] } | { write: fals
  * a line already carrying a **different** purchase-order number, and a cost that
  * is not a positive finite number.
  *
- * A shekel buy price a person entered is a different case: the dollar figure off
- * the document is still worth recording next to it, so the write proceeds and the
- * report says the shekel figure was left alone. `convertBuyPriceToIls` enforces
- * that independently — this only explains it.
+ * A shekel buy price a person entered is a different case: the document's figure
+ * is still worth recording next to it — that is what the comparison on the
+ * monthly screen compares against — so the write proceeds and the report says the
+ * shekel figure was left alone. `convertBuyPriceToIls` and writePurchaseOrderCosts
+ * enforce that independently; this only explains it.
  */
 export type PoWriteTarget = Pick<
   PoCandidateLine,
   "isOpen" | "poNumber" | "qty" | "buyPrice" | "fxRateSource"
->;
+> &
+  Partial<Pick<PoCandidateLine, "buyPriceForeign" | "buyCurrency" | "poUnitCost" | "poCurrency">>;
 
 export function evaluatePoWrite(
   poNumber: string,
@@ -176,13 +200,31 @@ export function evaluatePoWrite(
   }
 
   const warnings: string[] = [];
-  if (buyPriceIsHumanOwned(line)) {
+  // A shekel price an earlier upload of a purchase order wrote is the document's,
+  // not a person's — a re-upload replaces it, so there is nothing to warn about.
+  if (buyPriceIsHumanOwned(line) && line.fxRateSource !== "document") {
     warnings.push(
-      `מחיר הקנייה בשקלים (${line.buyPrice}) הוזן ידנית ולא יידרס — יירשם רק המחיר בדולרים`,
+      `מחיר הקנייה בשקלים (${line.buyPrice}) הוזן ידנית ולא יידרס — מחיר הזמנת הרכש יירשם לצידו להשוואה`,
+    );
+  }
+  if (
+    line.buyPriceForeign != null &&
+    line.buyPriceForeign !== "" &&
+    !foreignPriceFromPo({
+      buyPriceForeign: line.buyPriceForeign,
+      buyCurrency: line.buyCurrency ?? null,
+      poUnitCost: line.poUnitCost ?? null,
+      poCurrency: line.poCurrency ?? null,
+    })
+  ) {
+    warnings.push(
+      `מחיר קנייה במטבע זר כבר הוזן בשורה (${line.buyPriceForeign} ${line.buyCurrency ?? "USD"}) ולא יוחלף — מחיר הזמנת הרכש יירשם לצידו, ופער יוצג בסיכום החודשי`,
     );
   }
   if (poLine.qty !== null && line.qty !== null && Number(line.qty) !== poLine.qty) {
-    warnings.push(`הכמות בהזמנת הרכש (${poLine.qty}) שונה מהכמות בשורה (${line.qty})`);
+    warnings.push(
+      `הכמות בהזמנת הרכש (${poLine.qty}) שונה מהכמות בשורה (${line.qty}) — הכמות בשורה לא תשתנה, והפער יוצג בסיכום החודשי`,
+    );
   }
 
   return { write: true, warnings };

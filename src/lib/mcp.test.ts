@@ -1,16 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpTool } from "./mcp";
 
-const { getBolWorklist, getShipmentWorklist, writeBolMatches, writeShipmentUpdates } = vi.hoisted(
-  () => ({
-    getBolWorklist: vi.fn(),
-    getShipmentWorklist: vi.fn(),
-    writeBolMatches: vi.fn(),
-    writeShipmentUpdates: vi.fn(),
-  }),
-);
+const {
+  getBolWorklist,
+  getShipmentWorklist,
+  getPoWatchlist,
+  writeBolMatches,
+  writeShipmentUpdates,
+  recordMailUpdates,
+} = vi.hoisted(() => ({
+  getBolWorklist: vi.fn(),
+  getShipmentWorklist: vi.fn(),
+  getPoWatchlist: vi.fn(),
+  writeBolMatches: vi.fn(),
+  writeShipmentUpdates: vi.fn(),
+  recordMailUpdates: vi.fn(),
+}));
 
-vi.mock("@/db/queries", () => ({ getBolWorklist, getShipmentWorklist }));
+vi.mock("@/db/queries", () => ({ getBolWorklist, getShipmentWorklist, getPoWatchlist }));
+vi.mock("./mail-updates-write", () => ({ recordMailUpdates }));
 vi.mock("./bol-write", () => ({ writeBolMatches }));
 vi.mock("./shipment-write", () => ({ writeShipmentUpdates }));
 
@@ -30,8 +38,10 @@ function toolPayload(response: Awaited<ReturnType<typeof handleMcpMessage>>) {
 beforeEach(() => {
   getBolWorklist.mockReset();
   getShipmentWorklist.mockReset();
+  getPoWatchlist.mockReset();
   writeBolMatches.mockReset();
   writeShipmentUpdates.mockReset();
+  recordMailUpdates.mockReset();
 });
 
 describe("initialize", () => {
@@ -82,13 +92,15 @@ describe("protocol plumbing", () => {
 });
 
 describe("tools/list", () => {
-  it("lists all four tools with the schemas generated from their Zod schemas", async () => {
+  it("lists all six tools with the schemas generated from their Zod schemas", async () => {
     const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
     expect(tools.map((t) => t.name)).toEqual([
       "bol_worklist",
       "bol_submit_matches",
       "shipment_worklist",
       "shipment_update",
+      "po_watchlist",
+      "mail_updates_submit",
     ]);
 
     const matches = tools[1].inputSchema.properties as { matches: { anyOf: [{ items: object }] } };
@@ -245,5 +257,39 @@ describe("bol_submit_matches", () => {
     const response = await call("bol_delete_everything", {});
     expect(response!.error?.code).toBe(-32602);
     expect(response!.error?.message).toContain("bol_delete_everything");
+  });
+});
+
+describe("supplier mail about purchase orders", () => {
+  it("hands out the purchase orders to watch", async () => {
+    getPoWatchlist.mockResolvedValue([{ poNumber: "4500012345", lines: [], recordedEmailIds: [] }]);
+    const { text } = toolPayload(await call("po_watchlist"));
+    expect(JSON.parse(text)).toMatchObject({ ok: true, count: 1 });
+  });
+
+  it("records updates through the shared writer, marked as the agent's", async () => {
+    recordMailUpdates.mockResolvedValue({ ok: true, recorded: 1 });
+    await call("mail_updates_submit", {
+      updates: { poNumber: "4500012345", kind: "delay", emailId: "18fabc", newDate: "2026-11-02" },
+    });
+    expect(recordMailUpdates).toHaveBeenCalledWith(
+      [expect.objectContaining({ poNumber: "4500012345", kind: "delay", newDate: "2026-11-02" })],
+      "agent",
+    );
+  });
+
+  it("rejects a kind it does not know rather than recording noise", async () => {
+    const result = toolPayload(
+      await call("mail_updates_submit", {
+        updates: { poNumber: "4500012345", kind: "order_confirmation", emailId: "1" },
+      }),
+    );
+    expect(result.isError).toBe(true);
+    expect(recordMailUpdates).not.toHaveBeenCalled();
+  });
+
+  it("tells the agent a PO-only match covers every open line of the order", async () => {
+    const { tools } = (await rpc("tools/list"))!.result as { tools: McpTool[] };
+    expect(tools[1].description).toContain("EVERY open line");
   });
 });

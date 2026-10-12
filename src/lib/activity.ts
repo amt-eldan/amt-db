@@ -10,6 +10,7 @@ const ENTITY_LABELS: Record<string, string> = {
   supplier_invoice: "חשבונית ספק",
   courier_invoice: "חשבונית בלדר",
   staged_courier_invoice: "חשבונית בלדר ממתינה",
+  mail_update: "עדכון מהמייל",
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -23,6 +24,9 @@ const ACTION_LABELS: Record<string, string> = {
   reopen: "נפתחה מחדש",
   set_manual_status: "שינוי סטטוס",
   reallocate: "שיוך עלות משלוח עודכן",
+  auto_allocate: "עלות משלוח שויכה לפי שטר מטען",
+  handle: "טופל",
+  unhandle: "הוחזר לטיפול",
 };
 
 /** Where the entity lives, so an activity line is also a way back to it. */
@@ -33,6 +37,7 @@ const ENTITY_HREFS: Record<string, string> = {
   supplier_invoice: "/invoices",
   courier_invoice: "/courier",
   staged_courier_invoice: "/courier",
+  mail_update: "/updates",
 };
 
 export function describeActivity(entity: string, action: string): string {

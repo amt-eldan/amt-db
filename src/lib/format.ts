@@ -32,6 +32,38 @@ export function formatUSD(value: number | string | null | undefined): string {
   return n === null ? "—" : usdFormatter.format(n);
 }
 
+const moneyFormatters = new Map<string, Intl.NumberFormat>();
+
+/**
+ * An amount in its own currency — the purchase-order price as the document quotes
+ * it, in dollars, euros, pounds or shekels. Unit prices of components run to
+ * fractions of a cent, so up to four decimals are kept rather than rounding a
+ * $0.0123 part to "$0.01". Display only; nothing is ever summed across currencies.
+ */
+export function formatMoney(
+  value: number | string | null | undefined,
+  currency: string | null | undefined,
+): string {
+  const n = parseNumeric(value);
+  if (n === null) return "—";
+  const code = currency || "USD";
+  let formatter = moneyFormatters.get(code);
+  if (!formatter) {
+    try {
+      formatter = new Intl.NumberFormat("he-IL", {
+        style: "currency",
+        currency: code,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      });
+    } catch {
+      return `${numberFormatter.format(n)} ${code}`;
+    }
+    moneyFormatters.set(code, formatter);
+  }
+  return formatter.format(n);
+}
+
 export function formatNumber(value: number | string | null | undefined): string {
   const n = parseNumeric(value);
   return n === null ? "—" : numberFormatter.format(n);

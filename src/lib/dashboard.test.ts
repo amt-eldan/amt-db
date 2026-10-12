@@ -349,3 +349,22 @@ describe("buildDashboard — documents", () => {
     expect(data.topCustomers[0]).toEqual({ name: "לקוח 6", value: 70, count: 1 });
   });
 });
+
+describe("supplier mail alerts", () => {
+  it("raises unhandled delays, payment requests and new bills of lading, worst first", () => {
+    const data = buildDashboard(
+      input({ mailUpdates: { delay: 2, payment_request: 1, bol: 3 } }),
+    );
+    const mail = data.alerts.filter((a) => a.id.startsWith("mail-"));
+    expect(mail.map((a) => [a.id, a.count, a.tone, a.href])).toEqual([
+      ["mail-delay", 2, "danger", "/updates?kind=delay"],
+      ["mail-payment", 1, "warning", "/updates?kind=payment_request"],
+      ["mail-bol", 3, "info", "/updates?kind=bol"],
+    ]);
+  });
+
+  it("says nothing when every update was handled", () => {
+    const data = buildDashboard(input({ mailUpdates: { delay: 0, payment_request: 0, bol: 0 } }));
+    expect(data.alerts.some((a) => a.id.startsWith("mail-"))).toBe(false);
+  });
+});

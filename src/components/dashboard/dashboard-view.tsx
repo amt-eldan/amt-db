@@ -5,6 +5,7 @@ import {
   Bike,
   CircleAlert,
   Clock,
+  Mail,
   ReceiptText,
   TriangleAlert,
   TrendingUp,
@@ -13,10 +14,11 @@ import {
 import { StatusDot } from "@/components/open-orders/status-dot";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { ActivityRow } from "@/db/queries";
+import type { ActivityRow, MailUpdateRow } from "@/db/queries";
 import { activityHref, describeActivity } from "@/lib/activity";
 import type { DashboardData, RankedEntry } from "@/lib/dashboard";
 import { countLabel, formatDate, formatILS } from "@/lib/format";
+import { isMailUpdateKind, MAIL_UPDATE_LABELS } from "@/lib/mail-updates";
 import { STATUS_LABELS, type LineStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { TrendChart } from "./trend-chart";
@@ -38,10 +40,13 @@ const STATUS_FILLS: Record<LineStatus, string> = {
 export function DashboardView({
   data,
   activity,
+  mailUpdates,
   today,
 }: {
   data: DashboardData;
   activity: ActivityRow[];
+  /** The newest supplier mail nobody has handled yet. */
+  mailUpdates: MailUpdateRow[];
   today: string;
 }) {
   const { open, month, docs } = data;
@@ -171,6 +176,8 @@ export function DashboardView({
           </CardContent>
         </Card>
       </div>
+
+      {mailUpdates.length > 0 && <MailUpdatesCard updates={mailUpdates} />}
 
       {/* ---- pipeline health + who we sell to and buy from ---- */}
       <div className="grid lg:grid-cols-3 gap-2 md:gap-4">
@@ -305,6 +312,67 @@ export function DashboardView({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/**
+ * The newest supplier mail still waiting for someone: what each one is about,
+ * for which purchase order and customer, and a way into the full list.
+ */
+function MailUpdatesCard({ updates }: { updates: MailUpdateRow[] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <Mail className="size-4 text-muted-foreground" />
+            עדכונים מהספקים שממתינים לטיפול
+          </span>
+          <Link
+            href="/updates"
+            className="text-xs font-normal underline underline-offset-4 text-muted-foreground hover:text-foreground"
+          >
+            לכל העדכונים
+          </Link>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col divide-y">
+          {updates.map((u) => {
+            const kind = isMailUpdateKind(u.kind) ? u.kind : null;
+            const customers = [...new Set(u.lines.map((l) => l.customerName))].join(", ");
+            return (
+              <li key={u.id}>
+                <Link
+                  href={kind ? `/updates?kind=${kind}` : "/updates"}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1.5 text-sm hover:bg-muted rounded-md px-1"
+                >
+                  {kind && (
+                    <Badge
+                      variant={kind === "delay" ? "destructive" : "secondary"}
+                      className="shrink-0"
+                    >
+                      {MAIL_UPDATE_LABELS[kind]}
+                    </Badge>
+                  )}
+                  <span>
+                    PO <bdi dir="ltr">{u.poNumber}</bdi>
+                  </span>
+                  {u.supplier && <span className="text-muted-foreground">· {u.supplier}</span>}
+                  {customers && <span className="text-muted-foreground">· {customers}</span>}
+                  <span className="flex-1 min-w-40 truncate text-muted-foreground">
+                    {u.quote ?? u.subject ?? ""}
+                  </span>
+                  <span className="text-xs text-muted-foreground" dir="ltr">
+                    {formatDate(u.receivedAt)}
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -146,14 +146,31 @@ function identifierPattern(value: string): RegExp | null {
   return new RegExp(`(?<![A-Za-z0-9])${body}(?![A-Za-z0-9])`, "i");
 }
 
+/**
+ * A purchase-order or order number without the label someone typed in front of it.
+ *
+ * "PO-4501234567" on our side is "4501234567" in a supplier's mail, and the other
+ * way round: "PO#: 4501234567" puts three characters between the label and the
+ * digits, more than the two separators `identifierPattern` allows. The label is
+ * not part of the identifier, so it is dropped from both the pattern and the
+ * Gmail query — as long as what is left is still long enough to identify anything.
+ */
+export function identifierCore(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const compact = value.replace(/[^A-Za-z0-9]/g, "");
+  const core = compact.replace(/^(?:PO|P0|ORDER|ORD|NO)(?=[0-9])/i, "");
+  if (core.length >= 5) return core;
+  return compact.length >= 4 ? compact : null;
+}
+
 /** The keys a mail may name a line by, strongest first. */
 function lineKeys(line: BolWorklistRow): { field: string; pattern: RegExp }[] {
   const keys: { field: string; pattern: RegExp }[] = [];
   for (const [field, value] of [
-    ["poNumber", line.poNumber],
+    ["poNumber", identifierCore(line.poNumber)],
     ["pn", line.pn],
     ["sku", line.sku],
-    ["orderNumber", line.orderNumber],
+    ["orderNumber", identifierCore(line.orderNumber)],
   ] as const) {
     const pattern = value ? identifierPattern(value) : null;
     if (pattern) keys.push({ field, pattern });
@@ -193,34 +210,46 @@ interface LineFinding {
 /**
  * Folds one mail into the findings: which of the still-unmatched lines it names,
  * and what tracking number it carries for each.
+ *
+ * `named` is for the targeted pass, where Gmail itself already matched the mail
+ * to the line's purchase order. Gmail searches more than this code can read — the
+ * subject, the quoted headers of a forwarded mail, and the text of attached PDFs —
+ * and a supplier that sends "Shipment notification, AWB 9860064911" with the PO
+ * only inside the attached packing list is exactly the mail this exists for. So
+ * when the search was by that PO, the search is the proof the mail names the line.
  */
 function absorbMail(
   mail: ParsedEmail,
   lines: { line: BolWorklistRow; keys: { field: string; pattern: RegExp }[] }[],
   findings: Map<number, LineFinding>,
+  named = false,
 ): void {
   for (const { line, keys } of lines) {
-    if (!keys.some((k) => k.pattern.test(mail.text))) continue;
+    if (!named && !keys.some((k) => k.pattern.test(mail.text))) continue;
 
     // The line's own identifiers are excluded from the search for a tracking
     // number: a ten-digit purchase order is also a valid DHL number, and handing
     // it back would be the right line with the wrong value in the field.
-    const candidate = bestTrackingCandidate(
-      findTrackingCandidates(mail.text, {
-        poNumber: line.poNumber,
-        orderNumber: line.orderNumber,
-        pn: line.pn,
-        sku: line.sku,
-      }),
-    );
-    if (!candidate) continue;
+    const candidates = findTrackingCandidates(mail.text, {
+      poNumber: line.poNumber,
+      orderNumber: line.orderNumber,
+      pn: line.pn,
+      sku: line.sku,
+    });
+    if (candidates.length === 0) continue;
+    // Two equally strong numbers in one mail are not dropped: they are kept as an
+    // ambiguous finding, so the person pressing the button sees that this line's
+    // mail was found and why nothing was written, instead of nothing at all.
+    const best = bestTrackingCandidate(candidates);
+    const candidate = best ?? candidates[0];
+    const tied = best === null;
 
     const existing = findings.get(line.lineId);
     if (!existing) {
-      findings.set(line.lineId, { line, candidate, emailId: mail.id, ambiguous: false });
+      findings.set(line.lineId, { line, candidate, emailId: mail.id, ambiguous: tied });
       continue;
     }
-    if (existing.candidate.bol === candidate.bol) {
+    if (!tied && existing.candidate.bol === candidate.bol) {
       // The same number in two mails is confirmation, not a conflict.
       if (candidate.confidence > existing.candidate.confidence) {
         existing.candidate = candidate;
@@ -229,7 +258,7 @@ function absorbMail(
       continue;
     }
     if (candidate.confidence > existing.candidate.confidence) {
-      findings.set(line.lineId, { line, candidate, emailId: mail.id, ambiguous: false });
+      findings.set(line.lineId, { line, candidate, emailId: mail.id, ambiguous: tied });
     } else if (candidate.confidence === existing.candidate.confidence) {
       existing.ambiguous = true;
     }
@@ -312,12 +341,16 @@ export async function syncBolFromMail(options: BolSyncOptions = {}): Promise<Bol
       (entry) => !findings.has(entry.line.lineId) && entry.line.poNumber,
     );
     await pooled(remaining, FETCH_CONCURRENCY, outOfTime, async (entry) => {
-      const query = `newer_than:${lookbackDays}d "${entry.line.poNumber}"`;
+      // By the number itself, without a "PO-" someone typed on our side.
+      const po = identifierCore(entry.line.poNumber) ?? entry.line.poNumber;
+      const query = `newer_than:${lookbackDays}d "${po}"`;
       const ids = await gmail.search(query, 10);
       for (const id of ids) {
         if (outOfTime()) break;
         const mail = await readMail(id);
-        if (mail) absorbMail(mail, [entry], findings);
+        // Gmail matched this mail to the PO — possibly inside an attachment this
+        // code cannot read — so the search itself is what names the line.
+        if (mail) absorbMail(mail, [entry], findings, true);
       }
       return null;
     });

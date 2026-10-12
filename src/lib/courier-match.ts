@@ -113,6 +113,19 @@ export function normalizeTracking(value: string | null | undefined): string {
 }
 
 /**
+ * A purchase-order number as a comparison key: separators and case are noise, and
+ * so is a "PO" typed in front of the digits — the purchase-order upload may store
+ * PO-4501234567 where the office typed 4501234567 and the supplier writes
+ * "PO#: 4501234567", and all three are one order. Every place that asks "same
+ * PO?" uses this, so they cannot disagree about which lines one order covers.
+ */
+export function poKey(value: string | null | undefined): string {
+  const compact = normalizeTracking(value);
+  const core = compact.replace(/^(?:PO|P0)(?=[0-9])/, "");
+  return core.length >= 4 ? core : compact;
+}
+
+/**
  * Company-form noise. `ATIC (HK)TECHNOLOGY CO,LTD` and `ATIC Technology` are one
  * supplier; the suffixes carry no identity and appear inconsistently, so they are
  * removed before comparison rather than weighed.
@@ -375,7 +388,9 @@ export function matchShipmentsToLines(
   };
   for (const line of [...lines].sort((a, b) => a.lineId - b.lineId)) {
     push(byBol, normalizeTracking(line.bol), line);
-    push(byPo, normalizeTracking(line.poNumber), line);
+    // By the PO's key, so "PO 4500012345" on the invoice finds a line stored as
+    // 4500012345 — the same rule the bill-of-lading resolver uses.
+    push(byPo, poKey(line.poNumber), line);
     push(byOrder, normalizeTracking(line.orderNumber), line);
   }
 
@@ -397,8 +412,8 @@ export function matchShipmentsToLines(
     if (bolKey && byBol.has(bolKey)) {
       matches = byBol.get(bolKey);
       matchedBy = "bol";
-    } else if (refKey && byPo.has(refKey)) {
-      matches = byPo.get(refKey);
+    } else if (refKey && byPo.has(poKey(shipment.reference))) {
+      matches = byPo.get(poKey(shipment.reference));
       matchedBy = "po";
     } else if (refKey && byOrder.has(refKey)) {
       matches = byOrder.get(refKey);
@@ -520,4 +535,59 @@ export function allocationTotals(
 /** Accepting the matcher's guess: the reviewer looked, and it becomes their choice. */
 export function acceptGuess(shipment: CourierShipment): CourierShipment {
   return isLowConfidence(shipment.matchedBy) ? { ...shipment, matchedBy: "manual" } : shipment;
+}
+
+/**
+ * Places the shipments nobody has placed yet, against the lines as they are now —
+ * leaving every other shipment exactly as it was.
+ *
+ * A courier invoice is matched once, at upload, against whatever the lines said
+ * that day. The bill of lading usually reaches the line later — the tracking
+ * agent finds it in the mail a day or a week after the courier billed for it —
+ * and until now that left the shipment unplaced for good, its cost never reaching
+ * the monthly summary although the key that identifies it had since arrived. This
+ * is the second look.
+ *
+ * "Nobody has placed" is narrower than "has no line". A shipment is eligible only
+ * when it has no line **and no decision** (`matchedBy` null): the matcher found
+ * nothing at upload and no person touched it since. A row a reviewer cleared is
+ * `manual` with no line, and a row cleared before that was recorded still carries
+ * the key that once placed it (`bol`/`po`/`order`) — both are a person's "not
+ * these lines", and putting the money back on them would overrule that.
+ *
+ * `allowGuess: false` is for unattended use: only the identifying keys (tracking
+ * number, PO, order number) may place a shipment, never the supplier guess.
+ * `blockedLineIds` are lines the pass must not charge — a shipment whose match
+ * includes one stays unplaced for a person to look at. A placed shipment keeps its
+ * tag (`bol` / `po` / `order`) so the review shows how it got there.
+ */
+export function placeUnplacedShipments(
+  shipments: CourierShipment[],
+  lines: CourierLineOption[],
+  opts: { allowGuess: boolean; blockedLineIds?: ReadonlySet<number> },
+): { shipments: CourierShipment[]; placed: number } {
+  const out: CourierShipment[] = [];
+  let placed = 0;
+  for (const shipment of shipments) {
+    if (shipment.lineId !== null || shipment.matchedBy !== null) {
+      out.push(shipment);
+      continue;
+    }
+    const rows = matchShipmentsToLines([shipment], lines);
+    const landed = rows.filter((r) => r.lineId !== null);
+    const guessed = landed.some((r) => isLowConfidence(r.matchedBy));
+    const blocked = landed.some((r) => opts.blockedLineIds?.has(r.lineId!));
+    if (landed.length === 0 || (guessed && !opts.allowGuess) || blocked) {
+      out.push(shipment);
+      continue;
+    }
+    placed++;
+    for (const row of rows) {
+      // splitCount is the matcher's working detail; a stored shipment has none.
+      const stored: Partial<MatchedShipment> = { ...row };
+      delete stored.splitCount;
+      out.push(stored as CourierShipment);
+    }
+  }
+  return { shipments: out, placed };
 }

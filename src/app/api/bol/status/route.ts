@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { requireBearer } from "@/lib/api-auth";
+import { convertPendingBuyPrices } from "@/lib/fx-apply";
 import { writeShipmentUpdates } from "@/lib/shipment-write";
 import { shipmentUpdateInput } from "@/lib/validation";
 
@@ -38,5 +39,7 @@ export async function POST(request: NextRequest) {
   }
 
   const summary = await writeShipmentUpdates(parsed.map((p) => p.data!));
+  // Same as the MCP door: deliveries dated this morning get their rate later.
+  after(() => convertPendingBuyPrices());
   return NextResponse.json(summary);
 }

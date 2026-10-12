@@ -132,6 +132,65 @@ export function pickRateOnOrBefore(
   return best;
 }
 
+/**
+ * Today's date in Israel, yyyy-mm-dd. The Bank of Israel publishes on Israeli
+ * business days, and a server in UTC would otherwise think it is still yesterday
+ * for the first two or three hours of every Israeli morning.
+ */
+export function israelDate(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/**
+ * Whether `obs` is the final answer for a delivery on `date`, as of `today`.
+ *
+ * A rate published *on* the date always is. A rate from an earlier day is only
+ * the answer once the date itself is over: the representative rate is published
+ * in the afternoon, so a delivery confirmed this morning, converted this morning,
+ * would be converted at yesterday's rate — and permanently, because a converted
+ * line is never converted again. Until the day ends, "no rate yet" is the honest
+ * result; the next run (or the pending-conversion sweep) picks it up.
+ */
+export function isFinalRateFor(obs: FxObservation, date: string, today: string): boolean {
+  if (obs.date > date) return false;
+  if (obs.date === date) return true;
+  return date < today;
+}
+
+/**
+ * How many days a *cached* rate may sit before the date it is used for, when the
+ * Bank of Israel cannot be reached to confirm nothing newer was published. Covers
+ * a weekend or a short holiday and no more: a cache hit older than that is a sign
+ * the cache simply never heard about the days in between.
+ */
+export const MAX_CLOSED_DAYS = 4;
+
+/**
+ * The cache-only fallback, used when both Bank of Israel endpoints are down.
+ *
+ * The cache knows only the days it was asked about, so "the newest cached rate on
+ * or before the date" is not "the newest *published* rate on or before the date".
+ * Treating the first as the second was a real bug: once any rate was cached,
+ * every later delivery was converted at that one rate and the Bank of Israel was
+ * never asked again. Now the cache answers on its own only for the exact day, or
+ * — with upstream down — for a gap no longer than a weekend.
+ */
+export function cachedRateUsable(
+  cached: FxObservation,
+  date: string,
+  today: string,
+): boolean {
+  if (cached.date === date) return true;
+  if (!isFinalRateFor(cached, date, today)) return false;
+  const gap = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${cached.date}T00:00:00Z`)) / 86_400_000;
+  return gap >= 0 && gap <= MAX_CLOSED_DAYS;
+}
+
 /** Converts a foreign amount to shekels at a given rate, rounded to agorot. */
 export function convertToIls(amount: number, rate: number): number {
   return Math.round(amount * rate * 100) / 100;

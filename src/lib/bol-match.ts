@@ -10,7 +10,7 @@
  * their own.
  */
 
-import { normalizeTracking } from "./courier-match";
+import { normalizeTracking, poKey } from "./courier-match";
 
 /** The part of a line these rules look at. */
 export interface BolTarget {
@@ -26,6 +26,8 @@ export interface BolCandidateLine extends BolTarget {
   sku: string | null;
   poNumber: string | null;
   supplier: string | null;
+  /** 'הגיע' marks a line a person closed out by hand — it needs no tracking. */
+  manualStatus?: string | null;
 }
 
 /** The keys quoted in the email, used when the caller has no lineId to give. */
@@ -117,7 +119,7 @@ function matchesPn(line: BolCandidateLine, wanted: string): boolean {
 
 function matchesKey(line: BolCandidateLine, field: string, wanted: string): boolean {
   if (field === "pn") return matchesPn(line, wanted);
-  if (field === "poNumber") return key(line.poNumber) === wanted;
+  if (field === "poNumber") return poKey(line.poNumber) === wanted;
   return key(line.orderNumber) === wanted;
 }
 
@@ -152,9 +154,10 @@ export function resolveBolLine(
   keys: BolSearchKeys,
   candidates: BolCandidateLine[],
 ): BolResolution {
-  const supplied = SEARCH_KEYS.map((k) => ({ ...k, value: key(keys[k.field]) })).filter(
-    (k) => k.value !== "",
-  );
+  const supplied = SEARCH_KEYS.map((k) => ({
+    ...k,
+    value: k.field === "poNumber" ? poKey(keys[k.field]) : key(keys[k.field]),
+  })).filter((k) => k.value !== "");
   if (supplied.length === 0) {
     return { lineId: null, reason: "no lineId and no search keys (pn / poNumber / orderNumber)" };
   }
@@ -195,5 +198,81 @@ export function resolveBolLine(
   return {
     lineId: null,
     reason: `${waiting.length} open lines match ${described} (lines ${ids(waiting)}) — needs manual review`,
+  };
+}
+
+export type BolLinesResolution =
+  | { lineIds: number[]; matchedBy: BolMatchedBy }
+  | { lineIds: null; reason: string };
+
+/**
+ * Every line a tracking number belongs to — usually one, and several when the
+ * email names a whole purchase order.
+ *
+ * A purchase order is one shipment from one supplier: our PO lists the items, the
+ * supplier ships them under one waybill, and the confirmation says "PO 4500012345
+ * shipped, AWB 9860064911". So when the only identifying key is the PO number
+ * (no P/N to narrow it to one item), the number belongs on **every** open line of
+ * that PO still waiting for one. Refusing that as "ambiguous" was the bug: a PO
+ * with three lines matched three lines, `resolveBolLine` reported it for manual
+ * review, and a tracking number found by its purchase order never reached the
+ * open orders at all.
+ *
+ * Three limits keep the fan-out from claiming lines the shipment did not carry:
+ *  - **A P/N narrows to one item**, and stays one-line-or-nothing (that is
+ *    `resolveBolLine`, unchanged) — a P/N repeats across unrelated orders.
+ *  - **A waybill already on part of the PO is a partial shipment.** If any open
+ *    line of the PO already carries this very number — typically written per item
+ *    a moment earlier — the PO-wide report adds nothing: those lines are returned
+ *    so the writer reports "already set", and the rest stay waiting for their own
+ *    waybill instead of being given this one.
+ *  - **Lines marked 'הגיע' by hand are left out**, as on every worklist: they
+ *    arrived some other way and need no tracking number (and must not pick up this
+ *    shipment's courier charge).
+ */
+export function resolveBolLines(
+  keys: BolSearchKeys & { bol?: string | null },
+  candidates: BolCandidateLine[],
+): BolLinesResolution {
+  const po = poKey(keys.poNumber);
+  const narrowsToItem = key(keys.pn) !== "";
+  if (!po || narrowsToItem) {
+    const single = resolveBolLine(keys, candidates);
+    return single.lineId === null
+      ? { lineIds: null, reason: single.reason }
+      : { lineIds: [single.lineId], matchedBy: single.matchedBy };
+  }
+
+  const order = key(keys.orderNumber);
+  const described = `poNumber=${keys.poNumber}${order ? ` + orderNumber=${keys.orderNumber}` : ""}`;
+  const onPo = candidates.filter(
+    (line) => poKey(line.poNumber) === po && (!order || key(line.orderNumber) === order),
+  );
+  if (onPo.length === 0) return { lineIds: null, reason: `no line matches ${described}` };
+
+  // Looked for on every line of the PO — arrived and closed ones too: the item that
+  // shipped under this waybill may well have arrived since, and that does not make
+  // the rest of the order part of its shipment.
+  const bol = key(keys.bol);
+  const carrying = bol ? onPo.filter((line) => key(line.bol) === bol) : [];
+  if (carrying.length > 0) {
+    return { lineIds: carrying.map((line) => line.lineId), matchedBy: "poNumber" };
+  }
+
+  const open = onPo.filter((line) => line.isOpen && line.manualStatus !== "הגיע");
+  if (open.length === 0) {
+    return { lineIds: null, reason: `no open line still waiting for tracking matches ${described}` };
+  }
+
+  const waiting = open.filter((line) => isBolEmpty(line));
+  if (waiting.length > 0) {
+    return { lineIds: waiting.map((line) => line.lineId), matchedBy: "poNumber" };
+  }
+  // Nothing left to fill. As in resolveBolLine, a single line is handed back so
+  // the write guard can say whether this is the same number again or a conflict.
+  if (open.length === 1) return { lineIds: [open[0].lineId], matchedBy: "poNumber" };
+  return {
+    lineIds: null,
+    reason: `all ${open.length} open lines on ${described} already have a bill of lading (lines ${ids(open)})`,
   };
 }

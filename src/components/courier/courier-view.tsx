@@ -33,10 +33,12 @@ import type {
   CourierInvoiceRow,
   StagedCourierInvoiceRow,
 } from "@/db/queries";
+import { breakdownTotals, buildBolBreakdown } from "@/lib/courier-breakdown";
 import type { CourierLineOption } from "@/lib/courier-match";
 import { formatDate, formatILS, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { CourierAllocationsSheet } from "./courier-allocations-sheet";
+import { CourierBolBreakdown } from "./courier-bol-breakdown";
 import { CourierInvoiceFormSheet } from "./courier-invoice-form-sheet";
 import { StagedCourierList } from "./staged-courier-list";
 import { UploadCourierInvoiceButton } from "./upload-courier-invoice-button";
@@ -58,6 +60,9 @@ export function CourierView({
   const [editing, setEditing] = useState<CourierInvoiceRow | null>(null);
   const [allocating, setAllocating] = useState<CourierInvoiceRow | null>(null);
   const [deleting, setDeleting] = useState<CourierInvoiceRow | null>(null);
+  // Per invoice (what we owe each courier) or per bill of lading (what each
+  // shipment cost, item by item) — the second is how the couriers print it.
+  const [view, setView] = useState<"invoices" | "bol">("invoices");
   const [, startTransition] = useTransition();
 
   const byInvoice = useMemo(() => {
@@ -85,6 +90,31 @@ export function CourierView({
       );
     });
   }, [invoices, search, byInvoice]);
+
+  const breakdown = useMemo(() => {
+    const lineInfo = new Map(
+      lines.map((l) => [
+        l.lineId,
+        { lineId: l.lineId, orderNumber: l.orderNumber, customerName: l.customerName },
+      ]),
+    );
+    const full = buildBolBreakdown(invoices, allocations, lineInfo);
+    const q = search.trim().toLowerCase();
+    if (!q) return full;
+    // A waybill, an order number or a customer finds the shipment rows themselves,
+    // and the footer adds up only what the search left on screen.
+    const rows = full.rows.filter((row) =>
+      [
+        row.bol,
+        row.courier,
+        row.invoiceNumber,
+        row.reference,
+        row.description,
+        ...row.lines.flatMap((l) => [l.orderNumber, l.customerName]),
+      ].some((v) => v?.toLowerCase().includes(q)),
+    );
+    return { ...full, rows, ...breakdownTotals(rows) };
+  }, [invoices, allocations, lines, search]);
 
   // Only shekel invoices are summed — a foreign total is never converted here.
   const totals = useMemo(() => {
@@ -173,17 +203,43 @@ export function CourierView({
 
       <StagedCourierList items={staged} lines={lines} />
 
-      <div className="relative">
-        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-        <Input
-          placeholder="חיפוש בלדר / מספר חשבונית / שטר מטען / הזמנה..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="ps-9"
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 rounded-md border p-0.5" role="tablist" aria-label="תצוגה">
+          <Button
+            type="button"
+            size="sm"
+            role="tab"
+            aria-selected={view === "invoices"}
+            variant={view === "invoices" ? "default" : "ghost"}
+            onClick={() => setView("invoices")}
+          >
+            לפי חשבונית
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            role="tab"
+            aria-selected={view === "bol"}
+            variant={view === "bol" ? "default" : "ghost"}
+            onClick={() => setView("bol")}
+          >
+            לפי שטר מטען
+          </Button>
+        </div>
+        <div className="relative flex-1 min-w-56">
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <Input
+            placeholder="חיפוש בלדר / מספר חשבונית / שטר מטען / הזמנה..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="ps-9"
+          />
+        </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {view === "bol" ? (
+        <CourierBolBreakdown breakdown={breakdown} />
+      ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
             {invoices.length === 0

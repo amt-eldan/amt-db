@@ -24,7 +24,9 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import type { LineRow } from "@/db/queries";
+import { CURRENCY_LABELS, CURRENCY_SYMBOLS, FOREIGN_CURRENCIES } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
+import { comparePurchaseOrder, poPriceLabel, type ReferenceRates } from "@/lib/po-compare";
 import { MANUAL_STATUSES } from "@/lib/status";
 
 const AUTO = "__auto__";
@@ -37,7 +39,8 @@ function formFrom(line: LineRow): Record<string, string> {
     poNumber: line.poNumber ?? "",
     supplier: line.supplier ?? "",
     buyPrice: line.buyPrice ?? "",
-    buyPriceUsd: line.buyPriceUsd ?? "",
+    buyPriceForeign: line.buyPriceForeign ?? "",
+    buyCurrency: line.buyCurrency ?? "USD",
     shippingCost: line.shippingCost ?? "",
     contractDueDate: line.contractDueDate ?? "",
     deliveredAt: line.deliveredAt ?? "",
@@ -58,9 +61,12 @@ function formFrom(line: LineRow): Record<string, string> {
 export function LineEditSheet({
   line,
   onClose,
+  referenceRates,
 }: {
   line: LineRow | null;
   onClose: () => void;
+  /** Latest rate per currency, when the caller has them — see lib/po-compare. */
+  referenceRates?: ReferenceRates;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -130,9 +136,30 @@ export function LineEditSheet({
               </p>
             )}
           </Field>
-          <Field label="מחיר קנייה ליח' ($)">
-            <Input dir="ltr" inputMode="decimal" value={form.buyPriceUsd ?? ""} onChange={(e) => set("buyPriceUsd", e.target.value)} />
+          <Field label="מחיר קנייה ליח' (מטבע זר)">
+            <div className="flex gap-1.5">
+              <Input
+                dir="ltr"
+                inputMode="decimal"
+                className="flex-1 min-w-0"
+                value={form.buyPriceForeign ?? ""}
+                onChange={(e) => set("buyPriceForeign", e.target.value)}
+              />
+              <Select value={form.buyCurrency ?? "USD"} onValueChange={(v) => set("buyCurrency", v)}>
+                <SelectTrigger className="w-20 shrink-0" aria-label="מטבע">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FOREIGN_CURRENCIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {CURRENCY_SYMBOLS[c]} {CURRENCY_LABELS[c]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </Field>
+          {line && <PurchaseOrderFigures line={line} referenceRates={referenceRates} />}
           <Field label="עלות משלוח (₪)">
             <Input dir="ltr" inputMode="decimal" value={form.shippingCost ?? ""} onChange={(e) => set("shippingCost", e.target.value)} />
           </Field>
@@ -206,6 +233,45 @@ function Field({
     <div className={full ? "col-span-2 flex flex-col gap-1.5" : "flex flex-col gap-1.5"}>
       <Label className="text-xs text-muted-foreground">{label}</Label>
       {children}
+    </div>
+  );
+}
+
+/**
+ * What our purchase order said for this line, read-only, next to the fields the
+ * office types. The figures come from the uploaded document and are never edited
+ * here — they are the yardstick, and a gap against them is the point of showing
+ * them.
+ */
+function PurchaseOrderFigures({
+  line,
+  referenceRates,
+}: {
+  line: LineRow;
+  referenceRates?: ReferenceRates;
+}) {
+  if (line.poUnitCost === null && line.poQty === null) return null;
+  const cmp = comparePurchaseOrder(line, referenceRates);
+  return (
+    <div className="col-span-2 rounded-md border bg-muted/40 px-3 py-2 text-xs flex flex-col gap-1">
+      <span className="font-medium">לפי הזמנת הרכש {line.poNumber ? <bdi dir="ltr">{line.poNumber}</bdi> : null}</span>
+      <span className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+        <span>
+          כמות: <bdi dir="ltr">{line.poQty ?? "—"}</bdi>
+          {cmp.qty.check === "mismatch" && (
+            <span className="text-amber-700 dark:text-amber-500"> · בשורה {line.qty}</span>
+          )}
+        </span>
+        <span>
+          מחיר ליח&apos;: <bdi dir="ltr">{poPriceLabel(cmp.price.po, cmp.price.poCurrency)}</bdi>
+          {cmp.price.check === "mismatch" && (
+            <span className="text-amber-700 dark:text-amber-500">
+              {" "}· הוזן <bdi dir="ltr">{poPriceLabel(cmp.price.entered, cmp.price.enteredCurrency)}</bdi>
+            </span>
+          )}
+          {cmp.price.check === "incomparable" && <span> · אין שער להשוואה</span>}
+        </span>
+      </span>
     </div>
   );
 }

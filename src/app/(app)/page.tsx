@@ -1,13 +1,17 @@
+import { after } from "next/server";
 import {
   getCourierInvoices,
   getLines,
+  getMailUpdates,
   getRecentActivity,
   getStagedCourierInvoices,
   getStagedOrders,
   getSupplierInvoices,
+  getUnhandledMailUpdateCounts,
 } from "@/db/queries";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 import { buildDashboard } from "@/lib/dashboard";
+import { convertPendingBuyPrices } from "@/lib/fx-apply";
 
 export const dynamic = "force-dynamic";
 
@@ -17,15 +21,29 @@ export const dynamic = "force-dynamic";
  * never drift from the page it links to.
  */
 export default async function DashboardPage() {
-  const [lines, supplierInvoices, courierInvoices, stagedCourier, stagedOrders, activity] =
-    await Promise.all([
-      getLines(true), // open and closed: the pipeline and the history
-      getSupplierInvoices(),
-      getCourierInvoices(),
-      getStagedCourierInvoices(),
-      getStagedOrders(),
-      getRecentActivity(8),
-    ]);
+  const [
+    lines,
+    supplierInvoices,
+    courierInvoices,
+    stagedCourier,
+    stagedOrders,
+    activity,
+    mailUpdates,
+    recentMail,
+  ] = await Promise.all([
+    getLines(true), // open and closed: the pipeline and the history
+    getSupplierInvoices(),
+    getCourierInvoices(),
+    getStagedCourierInvoices(),
+    getStagedOrders(),
+    getRecentActivity(8),
+    getUnhandledMailUpdateCounts(),
+    getMailUpdates({ unhandledOnly: true, limit: 6 }),
+  ]);
+
+  // Delivered lines priced abroad that are still waiting for the day's rate —
+  // checked once the page is on its way, so the next load shows the figure.
+  after(() => convertPendingBuyPrices());
 
   const today = new Date();
   const data = buildDashboard({
@@ -34,10 +52,16 @@ export default async function DashboardPage() {
     courierInvoices,
     pendingOrders: stagedOrders.length,
     pendingCourierInvoices: stagedCourier.length,
+    mailUpdates,
     today,
   });
 
   return (
-    <DashboardView data={data} activity={activity} today={today.toISOString().slice(0, 10)} />
+    <DashboardView
+      data={data}
+      activity={activity}
+      mailUpdates={recentMail}
+      today={today.toISOString().slice(0, 10)}
+    />
   );
 }

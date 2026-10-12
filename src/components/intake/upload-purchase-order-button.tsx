@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, Loader2Icon, Receipt, X } from "lucide-react";
 import { toast } from "sonner";
 import { applyPurchaseOrder } from "@/app/actions/purchase-order";
+import {
+  CURRENCY_LABELS,
+  CURRENCY_SYMBOLS,
+  type PurchaseCurrency,
+} from "@/lib/currency";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,14 +45,12 @@ interface Preview {
   poNumber: string;
   supplier: string;
   orderDate: string | null;
-  currency: "USD" | "ILS";
+  currency: PurchaseCurrency;
   sourceFile: string;
   warnings: string[];
   proposals: Proposal[];
   matchable: number;
 }
-
-const MONEY: Record<"USD" | "ILS", string> = { USD: "$", ILS: "₪" };
 
 /**
  * Uploading **our** purchase order to a supplier, to get the unit buy price onto
@@ -180,9 +183,9 @@ export function UploadPurchaseOrderButton() {
               {preview.poNumber}
             </Badge>
             <span className="font-medium">{preview.supplier || "ספק לא זוהה"}</span>
-            <span className="text-muted-foreground">
-              {preview.currency === "USD" ? "בדולרים" : "בשקלים"}
-            </span>
+            <Badge variant="outline">
+              {CURRENCY_SYMBOLS[preview.currency]} {CURRENCY_LABELS[preview.currency]}
+            </Badge>
             {preview.orderDate && (
               <span className="text-muted-foreground" dir="ltr">
                 {preview.orderDate}
@@ -210,7 +213,8 @@ export function UploadPurchaseOrderButton() {
                 <TableRow>
                   <TableHead className="w-8">#</TableHead>
                   <TableHead>P/N</TableHead>
-                  <TableHead>כמות</TableHead>
+                  <TableHead>כמות בהזמנת הרכש</TableHead>
+                  <TableHead>כמות בשורה</TableHead>
                   <TableHead>מחיר ליח&apos;</TableHead>
                   <TableHead>ישויך לשורה</TableHead>
                   <TableHead>הערות</TableHead>
@@ -224,8 +228,18 @@ export function UploadPurchaseOrderButton() {
                       {p.pn ?? p.sku ?? "—"}
                     </TableCell>
                     <TableCell dir="ltr">{p.qty ?? "—"}</TableCell>
+                    <TableCell
+                      dir="ltr"
+                      className={
+                        p.ok && p.qty !== null && p.lineQty && Number(p.lineQty) !== p.qty
+                          ? "text-amber-700 dark:text-amber-500 font-medium"
+                          : "text-muted-foreground"
+                      }
+                    >
+                      {p.ok ? (p.lineQty ?? "ריק — יתמלא") : "—"}
+                    </TableCell>
                     <TableCell dir="ltr" className="whitespace-nowrap">
-                      {p.unitCost === null ? "—" : `${MONEY[preview.currency]}${p.unitCost}`}
+                      {p.unitCost === null ? "—" : `${CURRENCY_SYMBOLS[preview.currency]}${p.unitCost}`}
                     </TableCell>
                     <TableCell>
                       {p.ok && p.lineId !== null ? (
@@ -266,12 +280,12 @@ export function UploadPurchaseOrderButton() {
             </Button>
           </div>
 
-          {preview.currency === "USD" && (
-            <p className="text-xs text-muted-foreground">
-              המחירים נשמרים בדולרים. ההמרה לשקלים נעשית בשער היציג של בנק ישראל לתאריך המסירה —
-              שורה שעוד לא נמסרה תקבל את הסכום בשקלים כשהספקית תאשר מסירה.
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">
+            {preview.currency === "ILS"
+              ? "המחירים בשקלים ונרשמים כמחיר הקנייה, אלא אם כבר הוזן מחיר ידני."
+              : `המחירים נשמרים ב${CURRENCY_LABELS[preview.currency]}. ההמרה לשקלים נעשית בשער היציג של בנק ישראל לתאריך המסירה — שורה שעוד לא נמסרה תקבל את הסכום בשקלים כשהספקית תאשר מסירה.`}{" "}
+            הכמות והמחיר מהזמנת הרכש נשמרים גם בנפרד, להשוואה מול מה שהוזן ידנית בסיכום החודשי.
+          </p>
         </div>
       )}
     </div>

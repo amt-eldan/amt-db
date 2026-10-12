@@ -9,21 +9,30 @@
  * re-decides every one of them here rather than trusting what came back from the
  * browser.
  *
- * The shekel figure is never computed here. USD goes to `buy_price_usd` and
- * `convertBuyPriceToIls` converts it if the line already has a delivery date to
- * pick a rate by — the same shared helper both other doors use, so a line's buy
- * price cannot mean two things depending on how it arrived. A purchase order
- * priced in shekels has nothing to convert, so it fills `buy_price` directly and
- * records `fx_rate_source = 'document'` to say where the number came from.
+ * The shekel figure is never computed here. A foreign price (dollars, euros,
+ * pounds) goes to `buy_price_foreign` + `buy_currency`, and `convertBuyPriceToIls`
+ * converts it if the line already has a delivery date to pick a rate by — the
+ * same shared helper the other doors use, so a line's buy price cannot mean two
+ * things depending on how it arrived. A purchase order priced in shekels has
+ * nothing to convert, so it fills `buy_price` directly and records
+ * `fx_rate_source = 'document'` to say where the number came from.
+ *
+ * Separately from all that, the document's own figures — unit price, currency and
+ * quantity — are always recorded in `po_unit_cost` / `po_currency` / `po_qty`.
+ * The office keeps typing prices and quantities by hand; those three columns are
+ * what the typing is compared against (lib/po-compare), so they are never
+ * skipped because a person already owns the field they would otherwise fill.
  */
 
 import { inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { orderLines, type OrderLine } from "@/db/schema";
+import { allocatePendingCourierShipments } from "./courier-allocate";
 import { convertBuyPriceToIls } from "./fx-apply";
 import { applyLineFields } from "./line-fields";
-import { evaluatePoWrite } from "./po-match";
+import { staleConversionFields } from "./currency";
+import { buyPriceIsHumanOwned, evaluatePoWrite, foreignPriceFromPo } from "./po-match";
 import type { PoApplyInput } from "./validation";
 
 export interface PoWriteResult {
@@ -67,30 +76,74 @@ export async function writePurchaseOrderCosts(input: PoApplyInput): Promise<PoWr
     }
 
     const target = line!; // evaluatePoWrite only allows a line it found and found open
-    const fields: Record<string, unknown> = { poNumber: input.poNumber };
+    const unitCost = String(match.unitCost);
+    const fields: Record<string, unknown> = {
+      poNumber: input.poNumber,
+      // The supplier order as printed, for the comparison — always recorded.
+      poUnitCost: unitCost,
+      poCurrency: input.currency,
+    };
+    if (match.qty !== null) fields.poQty = String(match.qty);
 
     // A supplier name a person corrected is not overwritten by a document read.
     if (input.supplier && (!target.supplier || target.supplier.trim() === "")) {
       fields.supplier = input.supplier;
     }
 
-    if (input.currency === "USD") {
-      fields.buyPriceUsd = String(match.unitCost);
-      // Converts only when the line already carries a delivery date, because the
-      // rate is dated by the handover. Until then the dollars sit on the line and
-      // the status run converts them the day the carrier confirms delivery.
-      Object.assign(
-        fields,
-        await convertBuyPriceToIls(target, String(match.unitCost), target.deliveredAt),
-      );
-    } else {
+    // The line's quantity is the customer's and drives the sale value, so the
+    // purchase order only fills it when nothing is there yet. A different figure
+    // is shown as a gap on the monthly screen, not silently written over.
+    if (match.qty !== null && (target.qty === null || target.qty.trim() === "")) {
+      fields.qty = String(match.qty);
+    }
+
+    if (input.currency === "ILS") {
       // Already in shekels: nothing to convert, and no rate to record. The stale
       // rate from any earlier conversion is cleared rather than left sitting next
-      // to a number it did not produce.
-      fields.buyPrice = String(match.unitCost);
-      fields.fxRate = null;
-      fields.fxRateDate = null;
-      fields.fxRateSource = "document";
+      // to a number it did not produce — unless a person typed the shekel figure,
+      // in which case it stays theirs and the document's price sits beside it.
+      if (!buyPriceIsHumanOwned(target) || target.fxRateSource === "document") {
+        fields.buyPrice = unitCost;
+        fields.fxRate = null;
+        fields.fxRateDate = null;
+        fields.fxRateSource = "document";
+      }
+    } else {
+      // The foreign price is the document's to set when there is none yet, or it is
+      // an earlier upload's. Otherwise a person (or the tracking agent) set one that
+      // is not this order's: it stays, and po_unit_cost above is what the monthly
+      // comparison holds it against, so a disagreement shows instead of being
+      // written over.
+      const documentSetsForeign = foreignPriceFromPo(target);
+      if (documentSetsForeign) {
+        // A shekel figure converted from a different amount or currency is cleared
+        // with its rate, so the conversion below starts from this price.
+        Object.assign(
+          fields,
+          { buyPriceForeign: unitCost, buyCurrency: input.currency },
+          staleConversionFields(target, unitCost, input.currency),
+        );
+      }
+      // A shekel figure an earlier *shekel* reading of a purchase order wrote is
+      // superseded by this foreign one — it is the same kind of source, newer — so
+      // it goes too, and the line is converted from its foreign price.
+      if (target.fxRateSource === "document") {
+        Object.assign(fields, { buyPrice: null, fxRate: null, fxRateDate: null, fxRateSource: null });
+      }
+      // Converts only when the line already carries a delivery date, because the
+      // rate is dated by the handover. Until then the foreign price sits on the
+      // line and is converted the day the carrier confirms delivery.
+      if (documentSetsForeign || target.fxRateSource === "document") {
+        Object.assign(
+          fields,
+          await convertBuyPriceToIls(
+            { ...target, ...fields } as OrderLine,
+            documentSetsForeign ? unitCost : target.buyPriceForeign,
+            documentSetsForeign ? input.currency : target.buyCurrency,
+            target.deliveredAt,
+          ),
+        );
+      }
     }
 
     const changed = Object.keys(fields).filter(
@@ -125,6 +178,9 @@ export async function writePurchaseOrderCosts(input: PoApplyInput): Promise<PoWr
     revalidatePath("/orders");
     revalidatePath("/monthly");
     revalidatePath("/bol");
+    // A courier invoice that quoted this PO as its reference can place its
+    // shipment now that the lines carry the number.
+    await allocatePendingCourierShipments();
   }
 
   return { ok: true, written, skipped: results.length - written, results };

@@ -94,14 +94,30 @@ export const orderLines = pgTable(
     // shipment_status_at, which is when *we looked* — and it is this date, not
     // ours, that picks the representative exchange rate below.
     deliveredAt: date("delivered_at"),
-    // Purchase orders are priced in dollars while everything else in this table
-    // is shekels. buy_price stays the shekel figure the whole app already sums;
-    // these three record where it came from, so the number is auditable instead
-    // of being re-derived at display time with whatever rate is current.
-    buyPriceUsd: numeric("buy_price_usd"),
-    fxRate: numeric("fx_rate"), // ILS per 1 USD, as published
+    // Purchase orders are priced in a foreign currency — dollars mostly, but euros
+    // and pounds too — while everything else in this table is shekels. buy_price
+    // stays the shekel figure the whole app already sums; these record where it
+    // came from, so the number is auditable instead of being re-derived at display
+    // time with whatever rate is current.
+    buyPriceForeign: numeric("buy_price_foreign"), // unit price in buy_currency, unconverted
+    buyCurrency: text("buy_currency"), // NULL | 'USD' | 'EUR' | 'GBP' (see lib/currency)
+    fxRate: numeric("fx_rate"), // ILS per 1 unit of buy_currency, as published
     fxRateDate: date("fx_rate_date"), // the day that rate was published (see fx.ts)
-    fxRateSource: text("fx_rate_source"), // NULL | 'boi' | 'manual'
+    fxRateSource: text("fx_rate_source"), // NULL | 'boi' | 'manual' | 'document'
+    /**
+     * @deprecated Dollars-only predecessor of buy_price_foreign + buy_currency.
+     * Migration 0009 copied it across; nothing reads or writes it any more. Kept
+     * declared (not dropped) so the deployment that is still serving while the
+     * next one builds does not lose a column it selects. Safe to drop later.
+     */
+    legacyBuyPriceUsd: numeric("buy_price_usd"),
+    // What **our purchase order** said, exactly as the document printed it, kept
+    // apart from the fields above. The office still types quantities and prices by
+    // hand; these are the supplier order to compare that typing against
+    // (lib/po-compare). Written only by the purchase-order upload, never edited.
+    poUnitCost: numeric("po_unit_cost"),
+    poCurrency: text("po_currency"), // 'USD' | 'EUR' | 'GBP' | 'ILS'
+    poQty: numeric("po_qty"),
     notes: text("notes"),
     manualStatus: text("manual_status"), // NULL | 'הגיע' | 'סופק חלקי' | 'מאחר'
     isOpen: boolean("is_open").notNull().default(true),
@@ -314,6 +330,49 @@ export const fxRates = pgTable(
 );
 
 /**
+ * What suppliers wrote to us about a purchase order: a bill of lading, a delayed
+ * delivery, a request for payment.
+ *
+ * One row per (mail, PO, kind). The PO number is the key because it is the one
+ * identifier a supplier's mail reliably quotes — the lines it belongs to are
+ * looked up by it at display time, so a PO that gains a line later still shows
+ * its history. Rows come from two readers: the mailbox scan in the app
+ * (`source = 'sync'`, lib/mail-updates-sync) and the scheduled Claude task via
+ * MCP (`source = 'agent'`). Both insert with `on conflict do nothing`, so a mail
+ * is reported once however many times it is read.
+ *
+ * `handled_at` is the only thing a person changes: the dashboard counts what is
+ * still unhandled.
+ */
+export const mailUpdates = pgTable(
+  "mail_updates",
+  {
+    id: serial("id").primaryKey(),
+    messageId: text("message_id").notNull(),
+    threadId: text("thread_id"),
+    poNumber: text("po_number").notNull(),
+    kind: text("kind").notNull(), // see MAIL_UPDATE_KINDS in lib/mail-updates
+    subject: text("subject"),
+    sender: text("sender"),
+    receivedAt: date("received_at"),
+    /** The sentence that made it this kind — what a person reads instead of the mail. */
+    quote: text("quote"),
+    /** For kind 'bol': the tracking number the mail carried. */
+    bol: text("bol"),
+    /** For kind 'delay': the new date the supplier gave, when it gave one. */
+    newDate: date("new_date"),
+    source: text("source").notNull().default("sync"), // 'sync' | 'agent'
+    handledAt: timestamp("handled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("mail_updates_message_po_kind_unique").on(t.messageId, t.poNumber, t.kind),
+    index("mail_updates_handled_idx").on(t.handledAt, t.createdAt),
+    index("mail_updates_po_idx").on(t.poNumber),
+  ],
+);
+
+/**
  * Failed login attempts, for the brute-force lock in src/lib/login-throttle.ts.
  * A row per failure; an IP's rows are cleared on a successful login and aged out
  * of the counting window otherwise, so the table stays small.
@@ -338,3 +397,4 @@ export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
 export type CourierInvoice = typeof courierInvoices.$inferSelect;
 export type CourierInvoiceAllocation = typeof courierInvoiceAllocations.$inferSelect;
 export type FxRate = typeof fxRates.$inferSelect;
+export type MailUpdate = typeof mailUpdates.$inferSelect;

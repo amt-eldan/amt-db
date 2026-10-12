@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import type { LineRow } from "@/db/queries";
 import { downloadCsv, toCsv, type CsvCell } from "@/lib/csv";
 import { formatDate, formatILS, formatMonth } from "@/lib/format";
+import { comparePurchaseOrder, type ReferenceRates } from "@/lib/po-compare";
 import { lineProfit, lineValue } from "@/lib/profit";
 import {
   SHIPMENT_STATUS_LABELS,
@@ -36,10 +37,13 @@ export function MonthlyView({
   rows,
   months,
   selected,
+  referenceRates,
 }: {
   rows: LineRow[];
   months: string[];
   selected: string;
+  /** Latest rate per currency, for comparing hand-typed shekels with a foreign PO. */
+  referenceRates: ReferenceRates;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<LineRow | null>(null);
@@ -47,6 +51,9 @@ export function MonthlyView({
   // entirely. Open lines are in by default now; the switch brings back the
   // "finished business" view without changing which months exist.
   const [includeOpen, setIncludeOpen] = useState(true);
+  // Lines where what was typed by hand disagrees with our purchase order to the
+  // supplier — the review the office does after entering a month's figures.
+  const [gapsOnly, setGapsOnly] = useState(false);
   const [search, setSearch] = useState("");
 
   // The search narrows the ledger itself, not just the table: the totals and the
@@ -74,8 +81,18 @@ export function MonthlyView({
         ...row,
         sale: lineValue(row),
         profit: lineProfit(row),
-      }));
-  }, [rows, includeOpen, search]);
+        po: comparePurchaseOrder(row, referenceRates),
+      }))
+      .filter((row) => !gapsOnly || row.po.mismatch);
+  }, [rows, includeOpen, search, gapsOnly, referenceRates]);
+
+  const gapsInMonth = useMemo(
+    () =>
+      rows.filter(
+        (row) => (includeOpen || !row.isOpen) && comparePurchaseOrder(row, referenceRates).mismatch,
+      ).length,
+    [rows, includeOpen, referenceRates],
+  );
 
   const searching = search.trim() !== "";
 
@@ -102,13 +119,16 @@ export function MonthlyView({
   }, [computed]);
 
   function exportCsv() {
-    // Everything the old order-tracking spreadsheet carried, including the two
+    // Everything the old order-tracking spreadsheet carried, including the
     // columns this export used to drop: the purchase order the search runs on,
-    // and the dollar price with the rate it was converted at.
+    // the foreign price with the rate it was converted at, and what the purchase
+    // order itself said next to what was entered by hand.
     const headers = [
       "לקוח", "מס' הזמנה", "תאריך קבלת ההזמנה", "מקור התאריך", "סטטוס", "P/N", "ספק",
-      "הזמנת רכש", "כמות", "מחיר מכירה ליח'", "מחיר קנייה ליח' (₪)", "מחיר קנייה ליח' ($)",
-      "שער יציג", "תאריך השער", "משלוח", "סך מכירה", "רווח",
+      "הזמנת רכש", "כמות", "כמות בהזמנת הרכש", "מחיר מכירה ליח'", "מחיר קנייה ליח' (₪)",
+      "מחיר קנייה ליח' (מטבע זר)", "מטבע", "שער יציג", "תאריך השער",
+      "מחיר ליח' בהזמנת הרכש", "מטבע הזמנת הרכש", "פער מול הזמנת הרכש",
+      "משלוח", "סך מכירה", "רווח",
       "שטר מטען", "בלדר", "סטטוס משלוח", "תיאור מהמוביל", "תאריך מסירה", "הערות",
     ];
     const body: CsvCell[][] = computed.map((row) => [
@@ -121,11 +141,21 @@ export function MonthlyView({
       row.supplier,
       row.poNumber,
       row.qty,
+      row.poQty,
       row.unitPrice,
       row.buyPrice,
-      row.buyPriceUsd,
+      row.buyPriceForeign,
+      row.buyPriceForeign ? (row.buyCurrency ?? "USD") : null,
       row.fxRate,
       row.fxRateDate,
+      row.poUnitCost,
+      row.poCurrency,
+      [
+        row.po.qty.check === "mismatch" ? "כמות" : null,
+        row.po.price.check === "mismatch" ? "מחיר" : null,
+      ]
+        .filter(Boolean)
+        .join(" + "),
       row.shippingCost,
       row.sale?.toFixed(2),
       row.profit === null ? "ממתין" : row.profit.toFixed(2),
@@ -155,6 +185,19 @@ export function MonthlyView({
             <Switch id="include-open" checked={includeOpen} onCheckedChange={setIncludeOpen} />
             <label htmlFor="include-open" className="text-muted-foreground cursor-pointer">
               כולל פתוחות
+            </label>
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <Switch id="gaps-only" checked={gapsOnly} onCheckedChange={setGapsOnly} />
+            <label
+              htmlFor="gaps-only"
+              className={cn(
+                "cursor-pointer",
+                gapsInMonth > 0 ? "text-amber-700 dark:text-amber-500" : "text-muted-foreground",
+              )}
+              title="שורות שבהן הכמות או המחיר שהוזנו שונים ממה שמופיע בהזמנת הרכש לספק"
+            >
+              רק פערים מול הזמנת רכש ({gapsInMonth})
             </label>
           </div>
           <Select value={selected} onValueChange={(v) => router.push(`/monthly?month=${v}`)}>
@@ -225,7 +268,9 @@ export function MonthlyView({
       {computed.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
-            {searching
+            {gapsOnly
+              ? `אין פערים מול הזמנות הרכש בחודש ${formatMonth(selected)}.`
+              : searching
               ? `לא נמצאו שורות התואמות לחיפוש בחודש ${formatMonth(selected)}.`
               : includeOpen
                 ? `אין שורות בחודש ${formatMonth(selected)}.`
@@ -238,7 +283,11 @@ export function MonthlyView({
         <MonthlySummaryTable rows={computed} onEdit={setEditing} />
       )}
 
-      <LineEditSheet line={editing} onClose={() => setEditing(null)} />
+      <LineEditSheet
+        line={editing}
+        onClose={() => setEditing(null)}
+        referenceRates={referenceRates}
+      />
     </div>
   );
 }

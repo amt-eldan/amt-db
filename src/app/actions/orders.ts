@@ -3,8 +3,11 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { customers, orderLines, orders } from "@/db/schema";
+import { customers, orderLines, orders, type OrderLine } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { allocatePendingCourierShipments } from "@/lib/courier-allocate";
+import { staleConversionFields } from "@/lib/currency";
+import { convertBuyPriceToIls } from "@/lib/fx-apply";
 import { applyLineFields } from "@/lib/line-fields";
 import { requireSession } from "@/lib/require-session";
 import { MANUAL_STATUSES } from "@/lib/status";
@@ -180,7 +183,42 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
     toWrite.fxRateSource = fields.buyPrice ? "manual" : null;
   }
 
+  // A foreign price means nothing without its currency: dollars when the sheet
+  // did not say (the only currency there used to be), and none once it is cleared.
+  toWrite.buyCurrency = fields.buyPriceForeign ? (fields.buyCurrency ?? "USD") : null;
+
+  // A new foreign amount or currency — or none at all — makes the conversion
+  // beside it stale. When the shekel figure was the app's conversion it is undone,
+  // and redone from the new price (now if the line has a delivery date, else by
+  // the sweep once it does); a shekel figure a person typed — in this same save or
+  // before — or one from our own shekel purchase order stands, and only a rate
+  // that no longer belongs to the currency is dropped.
+  const typedShekels = String(fields.buyPrice ?? "") !== String(existing.buyPrice ?? "");
+  const stale = staleConversionFields(
+    typedShekels ? { ...existing, fxRateSource: "manual", buyPrice: fields.buyPrice } : existing,
+    fields.buyPriceForeign ?? null,
+    (toWrite.buyCurrency as string | null) ?? null,
+  );
+  Object.assign(toWrite, stale);
+  if (!typedShekels && "buyPrice" in stale && fields.buyPriceForeign) {
+    Object.assign(
+      toWrite,
+      await convertBuyPriceToIls(
+        { ...existing, ...toWrite } as OrderLine,
+        fields.buyPriceForeign,
+        toWrite.buyCurrency as string,
+        fields.deliveredAt ?? existing.deliveredAt,
+      ),
+    );
+  }
+
   await applyLineFields(existing, toWrite);
+  // A bill of lading or PO typed by hand is a key a courier invoice may have been
+  // waiting for — same second look as after an automatic write.
+  const keyChanged =
+    String(fields.bol ?? "") !== String(existing.bol ?? "") ||
+    String(fields.poNumber ?? "") !== String(existing.poNumber ?? "");
+  if (keyChanged) await allocatePendingCourierShipments();
   revalidateLinePages();
   return { ok: true, message: "השורה עודכנה" };
 }

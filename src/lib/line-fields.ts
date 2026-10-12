@@ -20,6 +20,17 @@ export async function applyLineFields(
   provenance?: Record<string, unknown>,
   actor: Actor = "user",
 ): Promise<void> {
+  // The retired dollar column must never outlive a newer foreign price: the build
+  // step carries any value left there over to buy_price_foreign (scripts/migrate.ts),
+  // so whatever sets the foreign price clears it.
+  if (
+    ("buyPriceForeign" in fields || "buyCurrency" in fields) &&
+    existing.legacyBuyPriceUsd != null &&
+    !("legacyBuyPriceUsd" in fields)
+  ) {
+    fields = { ...fields, legacyBuyPriceUsd: null };
+  }
+
   await db
     .update(orderLines)
     .set({ ...fields, updatedAt: new Date() })

@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { getBolWorklist, getShipmentWorklist } from "@/db/queries";
+import { getBolWorklist, getPoWatchlist, getShipmentWorklist } from "@/db/queries";
 import { writeBolMatches } from "./bol-write";
+import { recordMailUpdates } from "./mail-updates-write";
 import { writeShipmentUpdates } from "./shipment-write";
-import { bolMatchInput, shipmentUpdateInput } from "./validation";
+import { bolMatchInput, mailUpdateInput, shipmentUpdateInput } from "./validation";
 
 /**
  * A hand-rolled MCP server (JSON-RPC 2.0 over Streamable HTTP, stateless).
@@ -11,7 +12,7 @@ import { bolMatchInput, shipmentUpdateInput } from "./validation";
  * purpose: its `StreamableHTTPServerTransport` is written against Node's
  * `IncomingMessage`/`ServerResponse`, while a Next 16 route handler is handed a
  * Web `Request` and must return a Web `Response`. Bridging the two needs an
- * adapter layer and a session store this server has no use for — it is two tools,
+ * adapter layer and a session store this server has no use for — it is six tools,
  * no subscriptions, no server-initiated messages, and every call is independent.
  * What the SDK would have contributed is the dispatch below, which is short
  * enough to read in one sitting and has no upgrade path to get wrong.
@@ -31,7 +32,7 @@ const SERVER_INFO = {
  * Shown to the agent right after connecting. This is where the workflow lives,
  * so a scheduled task does not have to be told it again in every prompt.
  */
-const INSTRUCTIONS = `שרת שטרי המטען של AMT. שתי משימות בכל הרצה, בסדר הזה:
+const INSTRUCTIONS = `שרת שטרי המטען של AMT. שלוש משימות בכל הרצה, בסדר הזה:
 
 **א. איפה נמצאים המשלוחים שכבר יש להם שטר מטען**
 1. קרא ל-shipment_worklist. כל שורה מגיעה עם bol, carrier, ומתי נבדקה לאחרונה (הישנות ראשונות).
@@ -42,10 +43,20 @@ const INSTRUCTIONS = `שרת שטרי המטען של AMT. שתי משימות �
 
 **ב. שטרי מטען חדשים בתיבת המייל**
 4. קרא ל-bol_worklist — השורות הפתוחות שחסר בהן שטר מטען, כל אחת עם מפתחות החיפוש שלה.
-5. חפש במייל לפי סדר העדיפות: poNumber (הזמנת הרכש שלנו לספק — האות החזק ביותר) ← pn (מק"ט היצרן) ← orderNumber (משני, הספק לרוב לא מכיר אותו) ← supplier (אישוש בלבד).
+5. חפש במייל לפי סדר העדיפות: poNumber (הזמנת הרכש שלנו לספק — האות החזק ביותר) ← pn (מק"ט היצרן) ← orderNumber (משני, הספק לרוב לא מכיר אותו) ← supplier (אישוש בלבד). חפש גם בקבצים המצורפים (packing list, חשבונית) — לעיתים מספר הזמנת הרכש מופיע רק שם.
 6. דווח ב-bol_submit_matches עם ה-lineId מה-worklist. מייל אחד שמכסה כמה פריטים → כמה התאמות, אחת לכל lineId, עם אותו sourceEmailId.
+   **מייל שמזהה משלוח לפי מספר הזמנת רכש בלבד** ("PO 4500012345 shipped, AWB 9860064911") — אפשר לשלוח התאמה אחת עם poNumber בלי lineId, והשרת ירשום את שטר המטען על **כל** השורות הפתוחות של אותה הזמנת רכש שעדיין חסר להן. משלוח חלקי שמפרט פריטים — שלח pn לכל פריט.
 
-**מחיר קנייה:** הזמנות הרכש נקובות בדולרים. אם המייל או ההזמנה נוקבים במחיר קנייה ליחידה — שלח אותו כ-buyPriceUsd, **בדולרים ובלי להמיר**. השרת מביא את השער היציג של בנק ישראל לתאריך המסירה וממיר בעצמו, ושומר את השער שבו המיר. אל תחשב שערים ואל תמיר סכומים.
+**ג. עדכונים מהספקים לפי הזמנת רכש**
+7. קרא ל-po_watchlist — כל הזמנות הרכש הפתוחות, עם השורות שלהן ועם מזהי המיילים שכבר דווחו (recordedEmailIds — אין צורך לדווח אותם שוב).
+8. חפש במייל לפי מספר הזמנת הרכש (בגוף המייל, בנושא ובקבצים המצורפים) מיילים מהספקים מהימים האחרונים, וסווג כל אחד:
+   - bol — הודעת משלוח / שטר מטען / AWB / tracking. שלח את המספר ב-bol (והשרת גם ירשום אותו על השורות הפתוחות של ההזמנה). **משלוח חלקי** שמפרט אילו פריטים נשלחו — שלח את מק"טי היצרן שלהם ב-pns, ושטר המטען יירשם רק עליהם.
+   - delay — עיכוב באספקה, דחיית מועד, backorder, lead time חדש. אם נמסר מועד חדש — newDate.
+   - payment_request — בקשה לתשלום: proforma, דרישת תשלום מראש, חשבונית לתשלום, תזכורת תשלום.
+   מייל שאינו אחד מאלה (אישור הזמנה רגיל, פרסומת) — אל תדווח.
+9. דווח ב-mail_updates_submit: poNumber, kind, emailId, threadId, subject, from, receivedAt, ו-quote = המשפט מהמייל שמראה במה מדובר. מייל אחד על כמה הזמנות רכש → עדכון לכל אחת.
+
+**מחיר קנייה:** אם המייל או ההזמנה נוקבים במחיר קנייה ליחידה בדולרים — שלח אותו כ-buyPriceUsd, **בדולרים ובלי להמיר**. מחיר ביורו או בליש"ט — אל תשלח; הזמנות כאלה נקלטות מהזמנת הרכש עצמה במערכת. השרת מביא את השער היציג של בנק ישראל לתאריך המסירה וממיר בעצמו, ושומר את השער שבו המיר. אל תחשב שערים ואל תמיר סכומים. מחיר שנקלט מהזמנת הרכש שלנו לא נדרס.
 
 אל תנחש: התאמה שאינך בטוח בה — החזר אותה עם confidence נמוך (מתחת ל-0.5) או אל תחזיר אותה בכלל. השרת מדלג על התאמה עמומה ומדווח עליה, ולעולם לא דורס שטר מטען שכבר קיים ולא דורס מה שאדם הזין ביד.`;
 
@@ -100,9 +111,11 @@ export const TOOLS: McpTool[] = [
     description:
       "Writes bills of lading found in the mailbox onto their lines. Send one object or an array under `matches`; " +
       "`lineId` should be one received from bol_worklist; when the email belongs to no line on the worklist, leave it out and send the keys the email quotes " +
-      "(`poNumber` / `pn` / `orderNumber`) instead and the server resolves the line itself. Include `sourceEmailId` and `sourceQuote` — every write is audited with them, " +
+      "(`poNumber` / `pn` / `orderNumber`) instead and the server resolves the line itself. " +
+      "A match with `poNumber` and no `pn` is a whole purchase order shipped under one waybill: it is written onto EVERY open line of that PO still missing a bill of lading. " +
+      "For a partial shipment that lists its items, send one match per item with its `pn`. Include `sourceEmailId` and `sourceQuote` — every write is audited with them, " +
       "which is what makes an automatic write reviewable afterwards. " +
-      "The write is guarded and reports what it refused: keys matching more than one open line are reported rather than guessed, an existing bill of lading is never overwritten (a different value comes back as needing manual review), " +
+      "The write is guarded and reports what it refused: a P/N matching more than one open line is reported rather than guessed, an existing bill of lading is never overwritten (a different value comes back as needing manual review), " +
       "closed lines are skipped, and a match with confidence below 0.5 is skipped rather than guessed. A match without `confidence` is taken as asserted by the agent. " +
       "Returns { ok, written, skipped, results } — report the skips in the daily summary so a human can finish them.",
     inputSchema: {
@@ -144,7 +157,7 @@ export const TOOLS: McpTool[] = [
       "`status` is the normalized state — 'in_transit' | 'delivered' | 'exception' — and is preferred over prose; send the carrier's own wording in `statusText` too and it is kept for a human to read. " +
       "**'delivered' is the only thing that turns a row green, so send it only when the carrier says the goods were handed over** — not for 'out for delivery', not for 'arrived at facility'. " +
       "Send `deliveredAt` (yyyy-mm-dd) with the date the CARRIER states, never today's date: it is what dates the exchange rate, so a wrong date is a wrong profit figure. " +
-      "`buyPriceUsd` is the unit purchase price in dollars, unconverted — the server fetches the Bank of Israel representative rate for the delivery date, converts, and records the rate it used. Do not convert currency yourself. " +
+      "`buyPriceUsd` is the unit purchase price in dollars, unconverted — the server fetches the Bank of Israel representative rate for the delivery date, converts, and records the rate it used. Do not convert currency yourself, and do not send euro or sterling prices here; a price read from our own purchase order is never replaced by this field. " +
       "Include `sourceUrl` (the tracking page you read) so the write is reviewable. " +
       "The write is guarded: it never touches `bol`, never overwrites a delivery note a human wrote, never overwrites a buy price a human entered, and writes nothing at all when nothing changed — so running it twice a day is safe. " +
       "Returns { ok, written, unchanged, skipped, results }, where each written result lists which fields actually moved.",
@@ -152,6 +165,35 @@ export const TOOLS: McpTool[] = [
       type: "object",
       properties: {
         updates: oneOrMany(shipmentUpdateJsonSchema(), "One update, or an array of them."),
+      },
+      required: ["updates"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "po_watchlist",
+    title: "הזמנות רכש פתוחות למעקב במייל",
+    description:
+      "Returns every purchase order (our PO to a supplier) that still has open lines, most urgent first, each with its supplier, its lines (order number, customer, P/N, quantity, bill of lading if known) " +
+      "and `recordedEmailIds` — the mails already reported for it, which do not need reporting again. " +
+      "Search the mailbox by each `poNumber` (body, subject and attachments) for supplier mail about the order, and report what you find with mail_updates_submit.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "mail_updates_submit",
+    title: "דיווח עדכונים מהספקים לפי הזמנת רכש",
+    description:
+      "Records what a supplier wrote about a purchase order, so it shows on the management dashboard until a person handles it. Send one object or an array under `updates`. " +
+      "`kind` is one of: 'bol' (shipping notification / bill of lading / AWB — put the tracking number in `bol`; it is ALSO written onto the PO's open lines that still lack one, through the same guard as bol_submit_matches; for a PARTIAL shipment list the P/Ns it carried in `pns` and only those lines get it), " +
+      "'delay' (late delivery, rescheduled ship date, backorder — put a new date in `newDate` when the mail gives one), " +
+      "'payment_request' (pro-forma, prepayment request, invoice to pay, payment reminder). Do not report anything else. " +
+      "`poNumber`, `kind` and `emailId` are required; include `threadId`, `subject`, `from`, `receivedAt` (yyyy-mm-dd) and `quote` — the sentence that shows what the mail is about, which is what a person reads instead of opening the mail. " +
+      "One mail about several POs → one update per PO. Reporting the same mail again is harmless (recorded once). A PO number no order line carries is skipped and reported back. " +
+      "Returns { ok, recorded, duplicates, skipped, results, bol } — `bol` is the bill-of-lading write report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        updates: oneOrMany(jsonSchemaOf(mailUpdateInput), "One update, or an array of them."),
       },
       required: ["updates"],
       additionalProperties: false,
@@ -295,6 +337,17 @@ async function callTool(id: JsonRpcId, params: unknown): Promise<JsonRpcResponse
     const batch = parseBatch(args, "updates", shipmentUpdateInput, "עדכון");
     if ("error" in batch) return ok(id, toolError(batch.error));
     return ok(id, toolText(await writeShipmentUpdates(batch.items)));
+  }
+
+  if (name === "po_watchlist") {
+    const orders = await getPoWatchlist();
+    return ok(id, toolText({ ok: true, count: orders.length, orders }));
+  }
+
+  if (name === "mail_updates_submit") {
+    const batch = parseBatch(args, "updates", mailUpdateInput, "עדכון");
+    if ("error" in batch) return ok(id, toolError(batch.error));
+    return ok(id, toolText(await recordMailUpdates(batch.items, "agent")));
   }
 
   return fail(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(name)}`);

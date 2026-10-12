@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { isValidAgentToken } from "@/lib/agent-token";
+import { convertPendingBuyPrices } from "@/lib/fx-apply";
 import { handleMcpMessage } from "@/lib/mcp";
 
 export const runtime = "nodejs"; // node:crypto, and the Neon driver behind the tools
@@ -37,6 +38,13 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/mcp/[to
     );
   }
 
+  // A status run is when deliveries get their dates — and the morning's ones
+  // usually before that day's rate is published. Once the answer is on its way,
+  // convert whatever delivered line is still waiting for a rate.
+  if ((Array.isArray(body) ? body : [body]).some(isStatusUpdateCall)) {
+    after(() => convertPendingBuyPrices());
+  }
+
   // Batches were dropped in protocol 2025-06-18 but older clients may still send
   // one, and answering both shapes is a few lines.
   if (Array.isArray(body)) {
@@ -61,6 +69,11 @@ export async function DELETE(_request: NextRequest, ctx: RouteContext<"/api/mcp/
   const { token } = await ctx.params;
   if (!isValidAgentToken(token)) return notFound();
   return methodNotAllowed();
+}
+
+function isStatusUpdateCall(message: unknown): boolean {
+  const m = message as { method?: unknown; params?: { name?: unknown } } | null;
+  return m?.method === "tools/call" && m.params?.name === "shipment_update";
 }
 
 /** Same body a missing route would give: nothing to learn from guessing. */

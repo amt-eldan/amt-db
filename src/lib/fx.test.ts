@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   boiCurrentUrl,
   boiSeriesUrl,
+  cachedRateUsable,
   convertToIls,
+  isFinalRateFor,
+  israelDate,
   parseBoiCurrentRate,
   parseBoiSeriesCsv,
   pickRateOnOrBefore,
@@ -196,5 +199,55 @@ describe("the responses the Bank of Israel really returns", () => {
     expect(
       parseBoiCurrentRate({ currentExchangeRate: 3.5017, lastUpdate: "2026-08-21T09:23:04Z" }),
     ).toEqual({ date: "2026-08-21", rate: 3.5017 });
+  });
+});
+
+describe("israelDate", () => {
+  // 23:30 UTC on the 12th is already the 13th in Israel — a UTC server would
+  // otherwise treat the first hours of an Israeli morning as yesterday.
+  it("is the calendar day in Jerusalem, not in UTC", () => {
+    expect(israelDate(new Date("2026-10-12T23:30:00Z"))).toBe("2026-10-13");
+    expect(israelDate(new Date("2026-10-12T09:00:00Z"))).toBe("2026-10-12");
+  });
+});
+
+describe("isFinalRateFor", () => {
+  const obs = (date: string) => ({ date, rate: 3.07 });
+
+  it("takes the day's own rate as final", () => {
+    expect(isFinalRateFor(obs("2026-10-12"), "2026-10-12", "2026-10-12")).toBe(true);
+  });
+
+  // The rate is published in the afternoon. Converting a morning delivery at
+  // yesterday's rate would freeze the wrong figure on the line for good.
+  it("does not settle for an earlier day's rate while the day is still running", () => {
+    expect(isFinalRateFor(obs("2026-10-09"), "2026-10-12", "2026-10-12")).toBe(false);
+  });
+
+  it("settles for the last published rate once the day is over", () => {
+    // Saturday's delivery, looked at on Monday: Friday's rate is the answer.
+    expect(isFinalRateFor(obs("2026-10-09"), "2026-10-10", "2026-10-12")).toBe(true);
+  });
+
+  it("never uses a rate from after the date", () => {
+    expect(isFinalRateFor(obs("2026-10-12"), "2026-10-10", "2026-10-13")).toBe(false);
+  });
+});
+
+describe("cachedRateUsable", () => {
+  const obs = (date: string) => ({ date, rate: 3.07 });
+
+  it("trusts the cache for the exact day", () => {
+    expect(cachedRateUsable(obs("2026-10-12"), "2026-10-12", "2026-10-12")).toBe(true);
+  });
+
+  it("bridges a weekend when the Bank of Israel cannot be reached", () => {
+    expect(cachedRateUsable(obs("2026-10-09"), "2026-10-11", "2026-10-13")).toBe(true);
+  });
+
+  // The old bug: the newest cached rate stood in for every later day, because the
+  // cache only knew the days it had been asked about.
+  it("does not stretch a cached rate across weeks", () => {
+    expect(cachedRateUsable(obs("2026-09-01"), "2026-10-12", "2026-10-13")).toBe(false);
   });
 });

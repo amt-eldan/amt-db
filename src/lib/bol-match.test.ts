@@ -3,6 +3,7 @@ import {
   evaluateBolMatch,
   isBolEmpty,
   resolveBolLine,
+  resolveBolLines,
   type BolCandidateLine,
 } from "./bol-match";
 
@@ -179,5 +180,100 @@ describe("resolveBolLine", () => {
       reason: "no lineId and no search keys (pn / poNumber / orderNumber)",
     });
     expect(resolveBolLine({ pn: "  " }, [candidate()])).toMatchObject({ lineId: null });
+  });
+});
+
+describe("resolveBolLines", () => {
+  const onPo = (over: Partial<BolCandidateLine> & { lineId: number }) =>
+    candidate({ poNumber: "4500012345", pn: `PN-${over.lineId}`, ...over });
+
+  // One purchase order is one supplier shipment: the number belongs on all of it.
+  it("puts a PO-only number on every open line of the PO still waiting for one", () => {
+    const lines = [
+      onPo({ lineId: 1 }),
+      onPo({ lineId: 2 }),
+      onPo({ lineId: 3, bol: "TAKEN" }),
+      onPo({ lineId: 4, isOpen: false }),
+      candidate({ lineId: 5, poNumber: "4500099999" }),
+    ];
+    expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toEqual({
+      lineIds: [1, 2],
+      matchedBy: "poNumber",
+    });
+  });
+
+  it("reads a retyped PO number", () => {
+    const lines = [onPo({ lineId: 1 }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500-0123-45" }, lines)).toMatchObject({
+      lineIds: [1, 2],
+    });
+  });
+
+  // A partial shipment names its items, and each P/N still narrows to one line.
+  it("keeps the one-line rule when a P/N narrows the PO to an item", () => {
+    const lines = [onPo({ lineId: 1 }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345", pn: "PN-2" }, lines)).toEqual({
+      lineIds: [2],
+      matchedBy: "poNumber",
+    });
+  });
+
+  it("still refuses a P/N shared by unrelated orders", () => {
+    const lines = [candidate({ lineId: 1 }), candidate({ lineId: 2, orderNumber: "OTHER" })];
+    expect(resolveBolLines({ pn: lines[0].pn }, lines)).toMatchObject({ lineIds: null });
+  });
+
+  it("says so when every line of the PO is already filled", () => {
+    const lines = [onPo({ lineId: 1, bol: "A" }), onPo({ lineId: 2, bol: "B" })];
+    const result = resolveBolLines({ poNumber: "4500012345" }, lines);
+    expect(result.lineIds).toBeNull();
+    expect(result).toMatchObject({ reason: expect.stringContaining("already have a bill of lading") });
+  });
+
+  it("reports an unknown PO instead of guessing", () => {
+    expect(resolveBolLines({ poNumber: "nope-1" }, [onPo({ lineId: 1 })])).toMatchObject({
+      lineIds: null,
+    });
+  });
+});
+
+describe("resolveBolLines — what the PO-wide fan-out leaves alone", () => {
+  const onPo = (over: Partial<BolCandidateLine> & { lineId: number }) =>
+    candidate({ poNumber: "4500012345", pn: `PN-${over.lineId}`, ...over });
+
+  it("skips lines a person marked as arrived", () => {
+    const lines = [onPo({ lineId: 1, manualStatus: "הגיע" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toEqual({
+      lineIds: [2],
+      matchedBy: "poNumber",
+    });
+  });
+
+  // Item X was written per P/N a moment ago; the PO-wide report of the same mail
+  // must not hand X's waybill to item Y, which is still waiting for its own.
+  it("does not spread a waybill already on part of the PO to the rest", () => {
+    const lines = [onPo({ lineId: 1, bol: "9860064911" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345", bol: "98 6006 4911" }, lines)).toEqual({
+      lineIds: [1],
+      matchedBy: "poNumber",
+    });
+  });
+
+  // The item that shipped alone has since arrived (or closed); the rest of the
+  // order is still at the supplier and must not inherit its waybill.
+  it("does not spread a partial shipment's waybill once its own line arrived or closed", () => {
+    for (const done of [{ manualStatus: "הגיע" }, { isOpen: false }]) {
+      const lines = [onPo({ lineId: 1, bol: "9860064911", ...done }), onPo({ lineId: 2 })];
+      const result = resolveBolLines({ poNumber: "4500012345", bol: "9860064911" }, lines);
+      expect(result).toEqual({ lineIds: [1], matchedBy: "poNumber" });
+    }
+  });
+
+  it("treats PO-4500012345 and 4500012345 as one purchase order", () => {
+    const lines = [onPo({ lineId: 1, poNumber: "PO-4500012345" }), onPo({ lineId: 2 })];
+    expect(resolveBolLines({ poNumber: "4500012345" }, lines)).toMatchObject({ lineIds: [1, 2] });
+    expect(resolveBolLine({ poNumber: "PO 4500012345", pn: "PN-2" }, lines)).toMatchObject({
+      lineId: 2,
+    });
   });
 });

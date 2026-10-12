@@ -34,9 +34,21 @@ describe("normalizePoCurrency", () => {
     }
   });
 
+  // Euro and sterling orders used to be refused whole — no price, no quantity on
+  // any of their lines. They are ordinary purchase orders.
+  it("reads euros and pounds", () => {
+    for (const v of ["EUR", "eur", "€", "Euro", "יורו"]) {
+      expect(normalizePoCurrency(v)).toBe("EUR");
+    }
+    for (const v of ["GBP", "£", "Pounds", "Sterling", 'ליש"ט', "פאונד"]) {
+      expect(normalizePoCurrency(v)).toBe("GBP");
+    }
+  });
+
   // Guessing a currency turns a cost into a different number entirely.
   it("is null for anything else, including nothing", () => {
-    expect(normalizePoCurrency("EUR")).toBeNull();
+    expect(normalizePoCurrency("JPY")).toBeNull();
+    expect(normalizePoCurrency("CHF")).toBeNull();
     expect(normalizePoCurrency("")).toBeNull();
     expect(normalizePoCurrency(null)).toBeNull();
   });
@@ -98,11 +110,21 @@ describe("normalizeExtractedPurchaseOrder", () => {
 
   it("warns about a currency it cannot read, and stores none", () => {
     const { order, warnings } = normalizeExtractedPurchaseOrder(
-      raw({ documentCurrency: "EUR" }),
+      raw({ documentCurrency: "CHF" }),
       today,
     );
     expect(order.currency).toBeNull();
-    expect(hasWarning(warnings, "אינו דולר ואינו שקל")).toBe(true);
+    expect(hasWarning(warnings, "אינו דולר, יורו")).toBe(true);
+  });
+
+  it("keeps a euro purchase order's lines and currency", () => {
+    const { order, warnings } = normalizeExtractedPurchaseOrder(
+      raw({ documentCurrency: "€" }),
+      today,
+    );
+    expect(order.currency).toBe("EUR");
+    expect(order.lines.length).toBeGreaterThan(0);
+    expect(hasWarning(warnings, "מטבע")).toBe(false);
   });
 
   it("warns when no currency was found at all", () => {

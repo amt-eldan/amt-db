@@ -51,7 +51,13 @@ export interface TrackingCandidate {
  * numbers in the world. So 1Z is claimed first, and the ambiguous shapes are
  * matched last and are worth less.
  */
-const CARRIER_SHAPES: { carrier: DetectedCarrier; pattern: RegExp; strong: boolean }[] = [
+const CARRIER_SHAPES: {
+  carrier: DetectedCarrier;
+  pattern: RegExp;
+  strong: boolean;
+  /** Not even reported without a label — a shape ordinary text wears too often. */
+  labelRequired?: boolean;
+}[] = [
   // UPS: 1Z + 16 alphanumerics. Unique enough to stand on its own. The optional
   // separator is because carriers print their own numbers in groups ("1Z 999 AA1
   // 0123 4567 84"), and normalizeTracking strips them back out again.
@@ -68,6 +74,13 @@ const CARRIER_SHAPES: { carrier: DetectedCarrier; pattern: RegExp; strong: boole
   { carrier: "FedEx", pattern: /\b\d{34}\b/g, strong: false },
   // DHL Express: exactly 10 digits. The single most collision-prone shape here.
   { carrier: "DHL", pattern: /\b\d{10}\b/g, strong: false },
+  // DHL Express as its own documents print it: "98 6006 4911" (2-4-4), and the
+  // waybill-label form "9860 0649 11" (4-4-2). A UK phone number wears 2-4-4 too,
+  // which is why this is never strong — it is written only when a label says what
+  // it is — and unlabelled it is not even reported, so a phone number in a
+  // signature cannot tie with the real waybill and block it.
+  { carrier: "DHL", pattern: /\b\d{2}[ -]\d{4}[ -]\d{4}\b/g, strong: false, labelRequired: true },
+  { carrier: "DHL", pattern: /\b\d{4}[ -]\d{4}[ -]\d{2}\b/g, strong: false, labelRequired: true },
 ];
 
 /**
@@ -134,7 +147,12 @@ function denySet(deny: TrackingDenyList | undefined): Set<string> {
   const set = new Set<string>();
   for (const value of [deny?.poNumber, deny?.orderNumber, deny?.pn, deny?.sku]) {
     const normalized = normalizeTracking(value);
-    if (normalized) set.add(normalized);
+    if (!normalized) continue;
+    set.add(normalized);
+    // "PO-4501234567" on the line is "4501234567" in the mail — and ten digits is
+    // a DHL waybill's shape. The prefix-less form is the line's own number too.
+    const core = normalized.replace(/^(?:PO|P0|ORDER|ORD|NO)(?=[0-9])/, "");
+    if (core.length >= 4) set.add(core);
   }
   return set;
 }
@@ -226,7 +244,7 @@ export function findTrackingCandidates(
       if (!bol || forbidden.has(bol) || isPlaceholder(bol)) continue;
 
       const label = labelBefore(text, match.index);
-      if (label === null && looksLikeTimestamp(bol)) continue;
+      if (label === null && (shape.labelRequired || looksLikeTimestamp(bol))) continue;
       const candidate: TrackingCandidate = {
         bol,
         carrier: shape.carrier,

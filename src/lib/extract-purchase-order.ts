@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { isOwnCompanyName, OWN_COMPANY_LABEL } from "./company";
+import { normalizeCurrency, type PurchaseCurrency } from "./currency";
 import { asRecord, fmtAmount, isoDate, num, str } from "./extract-fields";
 import type { PoLine } from "./po-match";
 
@@ -23,8 +24,13 @@ import type { PoLine } from "./po-match";
 export const PO_DOCUMENT_KINDS = ["our_purchase_order", "customer_order", "other"] as const;
 export type PoDocumentKind = (typeof PO_DOCUMENT_KINDS)[number];
 
-/** Currencies a unit cost may be read in. Anything else is reported, not guessed. */
-export type PoCurrency = "USD" | "ILS";
+/**
+ * Currencies a unit cost may be read in: dollars, euros, pounds and shekels.
+ * Anything else is reported, not guessed. Dollars used to be the only foreign
+ * currency known here, so a euro or sterling purchase order was refused whole and
+ * none of its prices or quantities reached a line.
+ */
+export type PoCurrency = PurchaseCurrency;
 
 export interface ExtractedPurchaseOrder {
   /** Our purchase-order number — the key the tracking agent already searches by. */
@@ -41,13 +47,9 @@ export type PoExtractResult =
 
 const MANUAL_FALLBACK = " ניתן להזין מחיר קנייה ידנית בעריכת השורה.";
 
-/** USD / ILS in the spellings that turn up on paper, or null for anything else. */
+/** USD / EUR / GBP / ILS in the spellings that turn up on paper, or null for anything else. */
 export function normalizePoCurrency(raw: string | null): PoCurrency | null {
-  if (!raw) return null;
-  const t = raw.trim().toLowerCase();
-  if (/^(usd|us\$|\$|dollar|dollars|דולר|דולרים)$/.test(t)) return "USD";
-  if (/^(ils|nis|₪|shekel|shekels|שקל|שקלים|ש"ח|שח)$/.test(t)) return "ILS";
-  return null;
+  return normalizeCurrency(raw);
 }
 
 /**
@@ -102,7 +104,7 @@ export function normalizeExtractedPurchaseOrder(
   if (!currency) {
     warnings.push(
       currencyRaw
-        ? `המטבע במסמך (${currencyRaw}) אינו דולר ואינו שקל — מחיר הקנייה לא ייקלט`
+        ? `המטבע במסמך (${currencyRaw}) אינו דולר, יורו, ליש"ט או שקל — מחיר הקנייה לא ייקלט`
         : "לא זוהה מטבע במסמך — מחיר הקנייה לא ייקלט בלי לדעת באיזה מטבע הוא",
     );
   }
@@ -182,7 +184,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מ**הזמנת רכש שחב
 - poNumber = **מספר הזמנת הרכש שלנו**, כפי שהוא מופיע על המסמך. זה המזהה שהספק מצטט אחר כך באישורי המשלוח ובחשבונית, ולכן הוא השדה הכי חשוב כאן.
 - supplier = שם הספק שאליו נשלחה ההזמנה. לא השם שלנו — אנחנו המזמינים.
 - orderDate = תאריך ההזמנה, yyyy-mm-dd.
-- documentCurrency = המטבע של המחירים במסמך. הזמנות רכש שלנו נקובות כמעט תמיד ב-USD. החזר את המטבע כפי שהוא מופיע (USD / ILS / $ / ₪).
+- documentCurrency = המטבע של המחירים במסמך, **כפי שהוא מופיע בו**: USD / EUR / GBP / ILS (או $ / € / £ / ₪). רוב ההזמנות בדולרים, אבל יש ספקים שמקבלים יורו או ליש"ט, ויש ספקים ישראלים בשקלים — **אל תניח דולר**. חפש את המטבע ליד המחירים, בכותרת הטבלה או ליד הסה"כ.
 
 שורות (lines) — כל העמודים, חובה:
 - טבלת השורות נמשכת לעיתים על כמה עמודים. חלץ **כל** השורות מ**כל** העמודים. כותרת חוזרת, "המשך", מספרי עמוד וסיכומי ביניים אינם שורות.
@@ -196,7 +198,7 @@ const SYSTEM_PROMPT = `אתה מחלץ נתונים מ**הזמנת רכש שחב
 
 כללים:
 - תאריכים בפורמט ISO בלבד, yyyy-mm-dd.
-- מספרים: הסר סימני $ ו-₪ ופסיקי אלפים. **אל תמיר מטבע** — החזר את המספר כמו שהוא ואת המטבע בשדה שלו.
+- מספרים: הסר סימני מטבע ($ € £ ₪) ופסיקי אלפים. **אל תמיר מטבע** — החזר את המספר כמו שהוא ואת המטבע בשדה שלו.
 - warnings: כתוב בעברית כל דבר שדורש עין אנושית.`;
 
 const SUBMIT_PO_TOOL: Anthropic.Tool = {
@@ -211,7 +213,7 @@ const SUBMIT_PO_TOOL: Anthropic.Tool = {
       orderDate: { type: "string", description: "תאריך ההזמנה, yyyy-mm-dd." },
       documentCurrency: {
         type: "string",
-        description: "מטבע המחירים במסמך (USD / ILS / $ / ₪). כמעט תמיד USD.",
+        description: "מטבע המחירים במסמך כפי שמופיע בו: USD / EUR / GBP / ILS ($ / € / £ / ₪). אל תניח דולר.",
       },
       documentTotal: { type: "number", description: "סכום ההזמנה הכולל, לבקרת שפיות." },
       documentKind: {
