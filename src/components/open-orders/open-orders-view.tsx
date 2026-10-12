@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Archive, ArchiveRestore, Bot, Check, Pencil, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteLine, setLineOpen, setManualStatus } from "@/app/actions/orders";
@@ -75,8 +75,36 @@ export function OpenOrdersView({
   gmailConfigured: boolean;
 }) {
   const router = useRouter();
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // Search and status filter live in the URL too, so a refresh keeps them and a
+  // filtered view can be sent as a link. Local state keeps typing instant; the
+  // URL is written alongside with replace, so it doesn't pile up history.
+  const [search, setSearchState] = useState(() => searchParams.get("q") ?? "");
+  const [statusFilter, setStatusFilterState] = useState(
+    () => {
+      const fromUrl = searchParams.get("status");
+      return STATUS_FILTERS.some((f) => f.value === fromUrl) ? fromUrl! : "all";
+    },
+  );
+
+  function writeParam(key: string, value: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set(key, value);
+    else params.delete(key);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }
+
+  function setSearch(value: string) {
+    setSearchState(value);
+    writeParam("q", value.trim() || null);
+  }
+
+  function setStatusFilter(value: string) {
+    setStatusFilterState(value);
+    writeParam("status", value === "all" ? null : value);
+  }
   const [editing, setEditing] = useState<LineRow | null>(null);
   const [deleting, setDeleting] = useState<LineRow | null>(null);
   // Optimistic manual-status overrides, applied immediately on "✓ הגיע".
