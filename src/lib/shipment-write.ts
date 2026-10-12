@@ -38,6 +38,7 @@ import { inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { orderLines, type OrderLine } from "@/db/schema";
+import { agentBuyPrice } from "./currency";
 import { convertBuyPriceToIls } from "./fx-apply";
 import { applyLineFields } from "./line-fields";
 import { normalizeCarrierStatus } from "./shipment-status";
@@ -171,14 +172,17 @@ async function buildShipmentFields(
   // A delivery reported without one simply has no delivered_at until it gets one.
   if (update.deliveredAt) fields.deliveredAt = update.deliveredAt;
 
-  const buyPriceUsd = update.buyPriceUsd ?? line.buyPriceUsd;
-  if (update.buyPriceUsd && update.buyPriceUsd !== line.buyPriceUsd) {
-    fields.buyPriceUsd = update.buyPriceUsd;
-  }
+  const price = agentBuyPrice(line, update.buyPriceUsd);
+  Object.assign(fields, price.fields);
 
   Object.assign(
     fields,
-    await convertBuyPriceToIls(line, buyPriceUsd, update.deliveredAt ?? line.deliveredAt),
+    await convertBuyPriceToIls(
+      line,
+      price.amount,
+      price.currency,
+      update.deliveredAt ?? line.deliveredAt,
+    ),
   );
 
   return fields;

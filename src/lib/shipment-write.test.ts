@@ -43,7 +43,9 @@ function line(over: Partial<OrderLine> = {}): OrderLine {
     deliveryUpdate: null,
     shipmentStatusText: null,
     buyPrice: null,
-    buyPriceUsd: null,
+    buyPriceForeign: null,
+    buyCurrency: null,
+    poUnitCost: null,
     fxRate: null,
     fxRateDate: null,
     fxRateSource: null,
@@ -253,7 +255,8 @@ describe("the dollar conversion", () => {
 
     expect(representativeRateOn).toHaveBeenCalledWith("2026-08-12", "USD");
     expect(writtenFields()).toMatchObject({
-      buyPriceUsd: "41.5",
+      buyPriceForeign: "41.5",
+      buyCurrency: "USD",
       buyPrice: "154.42", // 41.50 × 3.721, to agorot
       fxRate: "3.721",
       fxRateDate: "2026-08-12",
@@ -291,7 +294,7 @@ describe("the dollar conversion", () => {
       update({ status: "delivered", deliveredAt: "2026-08-12", buyPriceUsd: 41.5 }),
     ]);
     const fields = writtenFields();
-    expect(fields).toMatchObject({ buyPriceUsd: "41.5" });
+    expect(fields).toMatchObject({ buyPriceForeign: "41.5", buyCurrency: "USD" });
     expect(fields).not.toHaveProperty("buyPrice");
     expect(fields).not.toHaveProperty("fxRate");
   });
@@ -327,7 +330,8 @@ describe("the dollar conversion", () => {
       42,
       line({
         buyPrice: "154.42",
-        buyPriceUsd: "41.5",
+        buyPriceForeign: "41.5",
+        buyCurrency: "USD",
         fxRate: "3.721",
         fxRateDate: "2026-08-12",
         fxRateSource: "boi",
@@ -340,5 +344,27 @@ describe("the dollar conversion", () => {
     ]);
     expect(representativeRateOn).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ written: 0, unchanged: 1 });
+  });
+});
+
+describe("a price in another currency", () => {
+  it("converts euros at the euro rate", async () => {
+    rows.set(42, line({ buyPriceForeign: "10", buyCurrency: "EUR", poUnitCost: "10" }));
+    representativeRateOn.mockResolvedValue({ rate: "4.05", rateDate: "2026-08-12", source: "boi" });
+    await writeShipmentUpdates([update({ status: "delivered", deliveredAt: "2026-08-12" })]);
+    expect(representativeRateOn).toHaveBeenCalledWith("2026-08-12", "EUR");
+    expect(writtenFields()).toMatchObject({ buyPrice: "40.5", fxRate: "4.05" });
+  });
+
+  it("ignores the agent's dollar figure when our purchase order priced the line", async () => {
+    rows.set(42, line({ buyPriceForeign: "10", buyCurrency: "GBP", poUnitCost: "10" }));
+    representativeRateOn.mockResolvedValue({ rate: "4.6", rateDate: "2026-08-12", source: "boi" });
+    await writeShipmentUpdates([
+      update({ status: "delivered", deliveredAt: "2026-08-12", buyPriceUsd: 99 }),
+    ]);
+    expect(representativeRateOn).toHaveBeenCalledWith("2026-08-12", "GBP");
+    const fields = writtenFields();
+    expect(fields).not.toHaveProperty("buyPriceForeign");
+    expect(fields).toMatchObject({ buyPrice: "46", fxRate: "4.6" });
   });
 });

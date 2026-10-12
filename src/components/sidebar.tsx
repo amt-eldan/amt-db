@@ -9,6 +9,7 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  Mail,
   ReceiptText,
   Truck,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const links = [
   // occasional task, so it sits below the screens that get opened every day.
   { href: "/monthly", label: "סיכום חודשי", icon: CalendarRange },
   { href: "/bol", label: "שטרי מטען", icon: Truck },
+  { href: "/updates", label: "עדכונים מהמייל", icon: Mail },
   { href: "/invoices", label: "חשבוניות ספק", icon: ReceiptText },
   { href: "/courier", label: "חשבוניות בלדר", icon: Bike },
   { href: "/intake", label: "קליטת הזמנה", icon: Inbox },

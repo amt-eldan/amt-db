@@ -197,3 +197,62 @@ export function resolveBolLine(
     reason: `${waiting.length} open lines match ${described} (lines ${ids(waiting)}) — needs manual review`,
   };
 }
+
+export type BolLinesResolution =
+  | { lineIds: number[]; matchedBy: BolMatchedBy }
+  | { lineIds: null; reason: string };
+
+/**
+ * Every line a tracking number belongs to — usually one, and several when the
+ * email names a whole purchase order.
+ *
+ * A purchase order is one shipment from one supplier: our PO lists the items, the
+ * supplier ships them under one waybill, and the confirmation says "PO 4501234567
+ * shipped, AWB 9860064911". So when the only identifying key is the PO number
+ * (no P/N to narrow it to one item), the number belongs on **every** open line of
+ * that PO still waiting for one. Refusing that as "ambiguous" was the bug: a PO
+ * with three lines matched three lines, `resolveBolLine` reported it for manual
+ * review, and a tracking number found by its purchase order never reached the
+ * open orders at all.
+ *
+ * The no-guessing rule still holds where it means something. A P/N repeats across
+ * unrelated orders, so a P/N (with or without a PO) still resolves to one line or
+ * nothing — that is `resolveBolLine`, unchanged. A partial shipment of a PO is
+ * told apart the same way: the email names the items it carried, and each P/N
+ * narrows to its own line.
+ */
+export function resolveBolLines(
+  keys: BolSearchKeys,
+  candidates: BolCandidateLine[],
+): BolLinesResolution {
+  const po = key(keys.poNumber);
+  const narrowsToItem = key(keys.pn) !== "";
+  if (!po || narrowsToItem) {
+    const single = resolveBolLine(keys, candidates);
+    return single.lineId === null
+      ? { lineIds: null, reason: single.reason }
+      : { lineIds: [single.lineId], matchedBy: single.matchedBy };
+  }
+
+  const order = key(keys.orderNumber);
+  const described = `poNumber=${keys.poNumber}${order ? ` + orderNumber=${keys.orderNumber}` : ""}`;
+  const onPo = candidates.filter(
+    (line) => key(line.poNumber) === po && (!order || key(line.orderNumber) === order),
+  );
+  if (onPo.length === 0) return { lineIds: null, reason: `no line matches ${described}` };
+
+  const open = onPo.filter((line) => line.isOpen);
+  if (open.length === 0) return { lineIds: null, reason: `only closed lines match ${described}` };
+
+  const waiting = open.filter((line) => isBolEmpty(line));
+  if (waiting.length > 0) {
+    return { lineIds: waiting.map((line) => line.lineId), matchedBy: "poNumber" };
+  }
+  // Nothing left to fill. As in resolveBolLine, a single line is handed back so
+  // the write guard can say whether this is the same number again or a conflict.
+  if (open.length === 1) return { lineIds: [open[0].lineId], matchedBy: "poNumber" };
+  return {
+    lineIds: null,
+    reason: `all ${open.length} open lines on ${described} already have a bill of lading (lines ${ids(open)})`,
+  };
+}

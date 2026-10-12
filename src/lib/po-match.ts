@@ -33,7 +33,8 @@ export interface PoCandidateLine {
   poNumber: string | null;
   supplier: string | null;
   buyPrice: string | null;
-  buyPriceUsd: string | null;
+  buyPriceForeign: string | null;
+  buyCurrency: string | null;
   fxRateSource: string | null;
   isOpen: boolean;
 }
@@ -144,10 +145,11 @@ export type PoWriteVerdict = { write: true; warnings: string[] } | { write: fals
  * a line already carrying a **different** purchase-order number, and a cost that
  * is not a positive finite number.
  *
- * A shekel buy price a person entered is a different case: the dollar figure off
- * the document is still worth recording next to it, so the write proceeds and the
- * report says the shekel figure was left alone. `convertBuyPriceToIls` enforces
- * that independently — this only explains it.
+ * A shekel buy price a person entered is a different case: the document's figure
+ * is still worth recording next to it — that is what the comparison on the
+ * monthly screen compares against — so the write proceeds and the report says the
+ * shekel figure was left alone. `convertBuyPriceToIls` and writePurchaseOrderCosts
+ * enforce that independently; this only explains it.
  */
 export type PoWriteTarget = Pick<
   PoCandidateLine,
@@ -176,13 +178,17 @@ export function evaluatePoWrite(
   }
 
   const warnings: string[] = [];
-  if (buyPriceIsHumanOwned(line)) {
+  // A shekel price an earlier upload of a purchase order wrote is the document's,
+  // not a person's — a re-upload replaces it, so there is nothing to warn about.
+  if (buyPriceIsHumanOwned(line) && line.fxRateSource !== "document") {
     warnings.push(
-      `מחיר הקנייה בשקלים (${line.buyPrice}) הוזן ידנית ולא יידרס — יירשם רק המחיר בדולרים`,
+      `מחיר הקנייה בשקלים (${line.buyPrice}) הוזן ידנית ולא יידרס — מחיר הזמנת הרכש יירשם לצידו להשוואה`,
     );
   }
   if (poLine.qty !== null && line.qty !== null && Number(line.qty) !== poLine.qty) {
-    warnings.push(`הכמות בהזמנת הרכש (${poLine.qty}) שונה מהכמות בשורה (${line.qty})`);
+    warnings.push(
+      `הכמות בהזמנת הרכש (${poLine.qty}) שונה מהכמות בשורה (${line.qty}) — הכמות בשורה לא תשתנה, והפער יוצג בסיכום החודשי`,
+    );
   }
 
   return { write: true, warnings };

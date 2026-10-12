@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import {
@@ -7,6 +7,7 @@ import {
   courierInvoiceFiles,
   courierInvoices,
   customers,
+  mailUpdates,
   orderLines,
   orders,
   stagedCourierInvoices,
@@ -17,6 +18,12 @@ import {
 import type { BolCandidateLine } from "@/lib/bol-match";
 import type { PoCandidateLine } from "@/lib/po-match";
 import type { CourierLineOption } from "@/lib/courier-match";
+import {
+  emptyMailUpdateCounts,
+  isMailUpdateKind,
+  poKey,
+  type MailUpdateCounts,
+} from "@/lib/mail-updates";
 import { monthRange } from "@/lib/format";
 import {
   courierInvoiceDraft,
@@ -56,10 +63,16 @@ export interface LineRow {
   shipmentStatusText: string | null;
   shipmentEta: string | null;
   deliveredAt: string | null;
-  buyPriceUsd: string | null;
+  /** Unit buy price in `buyCurrency`, unconverted. */
+  buyPriceForeign: string | null;
+  buyCurrency: string | null;
   fxRate: string | null;
   fxRateDate: string | null;
   fxRateSource: string | null;
+  /** What our purchase order printed — the comparison side, see lib/po-compare. */
+  poUnitCost: string | null;
+  poCurrency: string | null;
+  poQty: string | null;
   notes: string | null;
   manualStatus: string | null;
   isOpen: boolean;
@@ -113,10 +126,14 @@ const lineColumns = {
   shipmentStatusText: orderLines.shipmentStatusText,
   shipmentEta: orderLines.shipmentEta,
   deliveredAt: orderLines.deliveredAt,
-  buyPriceUsd: orderLines.buyPriceUsd,
+  buyPriceForeign: orderLines.buyPriceForeign,
+  buyCurrency: orderLines.buyCurrency,
   fxRate: orderLines.fxRate,
   fxRateDate: orderLines.fxRateDate,
   fxRateSource: orderLines.fxRateSource,
+  poUnitCost: orderLines.poUnitCost,
+  poCurrency: orderLines.poCurrency,
+  poQty: orderLines.poQty,
   notes: orderLines.notes,
   manualStatus: orderLines.manualStatus,
   isOpen: orderLines.isOpen,
@@ -245,8 +262,12 @@ export interface BolWorklistRow {
   poNumber: string | null;
   supplier: string | null;
   contractDueDate: string | null;
-  /** Already-known dollar buy price, so the agent looks for one only when it is missing. */
-  buyPriceUsd: string | null;
+  /**
+   * Already-known foreign buy price and its currency, so the agent looks for one
+   * only when it is missing.
+   */
+  buyPriceForeign: string | null;
+  buyCurrency: string | null;
 }
 
 /**
@@ -270,7 +291,8 @@ export async function getBolWorklist(): Promise<BolWorklistRow[]> {
       poNumber: orderLines.poNumber,
       supplier: orderLines.supplier,
       contractDueDate: orderLines.contractDueDate,
-      buyPriceUsd: orderLines.buyPriceUsd,
+      buyPriceForeign: orderLines.buyPriceForeign,
+      buyCurrency: orderLines.buyCurrency,
     })
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
@@ -310,7 +332,8 @@ export interface ShipmentWorklistRow {
   shipmentStatusText: string | null;
   shipmentEta: string | null;
   deliveredAt: string | null;
-  buyPriceUsd: string | null;
+  buyPriceForeign: string | null;
+  buyCurrency: string | null;
 }
 
 /**
@@ -344,7 +367,8 @@ export async function getShipmentWorklist(limit = 200): Promise<ShipmentWorklist
       shipmentStatusText: orderLines.shipmentStatusText,
       shipmentEta: orderLines.shipmentEta,
       deliveredAt: orderLines.deliveredAt,
-      buyPriceUsd: orderLines.buyPriceUsd,
+      buyPriceForeign: orderLines.buyPriceForeign,
+      buyCurrency: orderLines.buyCurrency,
     })
     .from(orderLines)
     .innerJoin(orders, eq(orderLines.orderId, orders.id))
@@ -381,7 +405,8 @@ export async function getPoCandidateLines(): Promise<PoCandidateLine[]> {
       poNumber: orderLines.poNumber,
       supplier: orderLines.supplier,
       buyPrice: orderLines.buyPrice,
-      buyPriceUsd: orderLines.buyPriceUsd,
+      buyPriceForeign: orderLines.buyPriceForeign,
+      buyCurrency: orderLines.buyCurrency,
       fxRateSource: orderLines.fxRateSource,
       isOpen: orderLines.isOpen,
     })
@@ -762,4 +787,211 @@ export async function findDuplicateOrder(orderNumber: string, customerName: stri
     .where(and(eq(orders.orderNumber, orderNumber), eq(customers.name, customerName)))
     .limit(1);
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Supplier mail about purchase orders (see lib/mail-updates)
+// ---------------------------------------------------------------------------
+
+/** Every line that carries a PO number — the set a mail update may attach to. */
+export async function getPoLineKeys(): Promise<{ poNumber: string; isOpen: boolean }[]> {
+  return db
+    .select({ poNumber: sql<string>`${orderLines.poNumber}`, isOpen: orderLines.isOpen })
+    .from(orderLines)
+    .where(sql`coalesce(trim(${orderLines.poNumber}), '') <> ''`);
+}
+
+export interface PoWatchLine {
+  lineId: number;
+  orderNumber: string;
+  customer: string;
+  pn: string | null;
+  qty: string | null;
+  bol: string | null;
+  contractDueDate: string | null;
+  shipmentStatus: string | null;
+}
+
+export interface PoWatchEntry {
+  poNumber: string;
+  supplier: string | null;
+  lines: PoWatchLine[];
+  /** Earliest contractual due date among the lines — the urgency of the order. */
+  dueDate: string | null;
+  /** Mails already recorded for this PO, so a run can skip what it reported before. */
+  recordedEmailIds: string[];
+}
+
+/**
+ * The purchase orders worth watching the mailbox for: every PO number on an open
+ * line, with its lines and the mails already recorded against it. Most urgent
+ * first, so a partial run covers what matters.
+ */
+export async function getPoWatchlist(): Promise<PoWatchEntry[]> {
+  const rows = await db
+    .select({
+      lineId: orderLines.id,
+      poNumber: sql<string>`${orderLines.poNumber}`,
+      supplier: orderLines.supplier,
+      orderNumber: orders.orderNumber,
+      customer: customers.name,
+      pn: orderLines.pn,
+      qty: orderLines.qty,
+      bol: orderLines.bol,
+      contractDueDate: orderLines.contractDueDate,
+      shipmentStatus: orderLines.shipmentStatus,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(
+      and(
+        eq(orderLines.isOpen, true),
+        sql`coalesce(trim(${orderLines.poNumber}), '') <> ''`,
+        sql`${orderLines.manualStatus} is distinct from 'הגיע'`,
+      ),
+    )
+    .orderBy(asc(orderLines.id));
+
+  const byKey = new Map<string, PoWatchEntry>();
+  for (const row of rows) {
+    const k = poKey(row.poNumber);
+    let entry = byKey.get(k);
+    if (!entry) {
+      entry = {
+        poNumber: row.poNumber,
+        supplier: row.supplier,
+        lines: [],
+        dueDate: null,
+        recordedEmailIds: [],
+      };
+      byKey.set(k, entry);
+    }
+    entry.supplier ??= row.supplier;
+    entry.lines.push({
+      lineId: row.lineId,
+      orderNumber: row.orderNumber,
+      customer: row.customer,
+      pn: row.pn,
+      qty: row.qty,
+      bol: row.bol,
+      contractDueDate: row.contractDueDate,
+      shipmentStatus: row.shipmentStatus,
+    });
+    if (row.contractDueDate && (!entry.dueDate || row.contractDueDate < entry.dueDate)) {
+      entry.dueDate = row.contractDueDate;
+    }
+  }
+
+  if (byKey.size > 0) {
+    const since = new Date(Date.now() - 90 * 86_400_000);
+    const recorded = await db
+      .select({ poNumber: mailUpdates.poNumber, messageId: mailUpdates.messageId })
+      .from(mailUpdates)
+      .where(gte(mailUpdates.createdAt, since));
+    for (const r of recorded) {
+      const entry = byKey.get(poKey(r.poNumber));
+      if (entry && !entry.recordedEmailIds.includes(r.messageId)) {
+        entry.recordedEmailIds.push(r.messageId);
+      }
+    }
+  }
+
+  return [...byKey.values()].sort(
+    (a, b) =>
+      (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999") ||
+      a.poNumber.localeCompare(b.poNumber),
+  );
+}
+
+export interface MailUpdateLine {
+  lineId: number;
+  orderNumber: string;
+  customerName: string;
+  pn: string | null;
+  bol: string | null;
+  isOpen: boolean;
+}
+
+export interface MailUpdateRow {
+  id: number;
+  messageId: string;
+  threadId: string | null;
+  poNumber: string;
+  kind: string;
+  subject: string | null;
+  sender: string | null;
+  receivedAt: string | null;
+  quote: string | null;
+  bol: string | null;
+  newDate: string | null;
+  source: string;
+  handledAt: Date | null;
+  createdAt: Date;
+  supplier: string | null;
+  /** The order lines on this purchase order, looked up now rather than stored. */
+  lines: MailUpdateLine[];
+}
+
+/** Recorded updates, newest mail first, each with the lines its PO is on. */
+export async function getMailUpdates(limit = 500): Promise<MailUpdateRow[]> {
+  const updates = await db
+    .select()
+    .from(mailUpdates)
+    .orderBy(sql`${mailUpdates.receivedAt} desc nulls last`, desc(mailUpdates.id))
+    .limit(limit);
+  if (updates.length === 0) return [];
+
+  const lines = await db
+    .select({
+      lineId: orderLines.id,
+      poNumber: sql<string>`${orderLines.poNumber}`,
+      supplier: orderLines.supplier,
+      orderNumber: orders.orderNumber,
+      customerName: customers.name,
+      pn: orderLines.pn,
+      bol: orderLines.bol,
+      isOpen: orderLines.isOpen,
+    })
+    .from(orderLines)
+    .innerJoin(orders, eq(orderLines.orderId, orders.id))
+    .innerJoin(customers, eq(orders.customerId, customers.id))
+    .where(sql`coalesce(trim(${orderLines.poNumber}), '') <> ''`)
+    .orderBy(asc(orderLines.id));
+
+  const byKey = new Map<string, typeof lines>();
+  for (const line of lines) {
+    const k = poKey(line.poNumber);
+    const list = byKey.get(k);
+    if (list) list.push(line);
+    else byKey.set(k, [line]);
+  }
+
+  return updates.map((u) => {
+    const onPo = byKey.get(poKey(u.poNumber)) ?? [];
+    return {
+      ...u,
+      supplier: onPo.find((l) => l.supplier)?.supplier ?? null,
+      lines: onPo.map(({ lineId, orderNumber, customerName, pn, bol, isOpen }) => ({
+        lineId,
+        orderNumber,
+        customerName,
+        pn,
+        bol,
+        isOpen,
+      })),
+    };
+  });
+}
+
+/** How many updates of each kind nobody has marked as handled — the dashboard's alerts. */
+export async function getUnhandledMailUpdateCounts(): Promise<MailUpdateCounts> {
+  const rows = await db
+    .select({ kind: mailUpdates.kind, count: sql<number>`count(*)::int` })
+    .from(mailUpdates)
+    .where(isNull(mailUpdates.handledAt))
+    .groupBy(mailUpdates.kind);
+  const counts = emptyMailUpdateCounts();
+  for (const row of rows) if (isMailUpdateKind(row.kind)) counts[row.kind] = row.count;
+  return counts;
 }

@@ -14,14 +14,16 @@ import { EditButton } from "@/components/lines/edit-button";
 import { LateDeliveryBadge } from "@/components/lines/late-delivery-badge";
 import { ReceivedDate } from "@/components/lines/received-date";
 import type { LineRow } from "@/db/queries";
-import { formatDate, formatILS, formatNumber, formatUSD } from "@/lib/format";
+import { formatDate, formatILS, formatMoney, formatNumber } from "@/lib/format";
+import { poPriceLabel, type PoComparison } from "@/lib/po-compare";
 import { SHIPMENT_STATUS_LABELS, asShipmentStatus } from "@/lib/shipment-status";
 import { cn } from "@/lib/utils";
 
-/** A monthly ledger line with its sale value and profit precomputed. */
+/** A monthly ledger line with its sale value, profit and PO comparison precomputed. */
 export type MonthlyComputedRow = LineRow & {
   sale: number | null;
   profit: number | null;
+  po: PoComparison;
 };
 
 export function MonthlySummaryTable({
@@ -79,7 +81,9 @@ export function MonthlySummaryTable({
                 <TableCell>
                   <DeliveryCell row={row} />
                 </TableCell>
-                <TableCell dir="ltr" className="text-end">{formatNumber(row.qty)}</TableCell>
+                <TableCell dir="ltr" className="text-end whitespace-nowrap">
+                  <QtyCell row={row} />
+                </TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">{formatILS(row.unitPrice)}</TableCell>
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">
                   <BuyPriceCell row={row} />
@@ -87,6 +91,12 @@ export function MonthlySummaryTable({
                 <TableCell dir="ltr" className="text-end whitespace-nowrap">
                   {row.shippingCost ? (
                     formatILS(row.shippingCost)
+                  ) : row.bol?.trim() ? (
+                    // The cost lands by itself once a courier invoice for this
+                    // waybill is in (see lib/courier-allocate) — say what it waits for.
+                    <span className="text-xs text-muted-foreground" title="העלות תירשם אוטומטית כשתיקלט חשבונית בלדר עם שטר המטען הזה">
+                      ממתין לחשבונית בלדר
+                    </span>
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}
@@ -142,10 +152,23 @@ export function MonthlySummaryTable({
                 </span>
                 {row.poNumber && <span>רכש: <bdi dir="ltr">{row.poNumber}</bdi></span>}
                 <span>
+                  כמות: <bdi dir="ltr">{formatNumber(row.qty)}</bdi>
+                  {row.po.qty.check === "mismatch" && (
+                    <span className="text-amber-700 dark:text-amber-500">
+                      {" "}(רכש: <bdi dir="ltr">{formatNumber(row.po.qty.po)}</bdi>)
+                    </span>
+                  )}
+                </span>
+                <span>
                   קנייה: <bdi dir="ltr">{formatILS(row.buyPrice)}</bdi>
-                  {row.buyPriceUsd && (
-                    <bdi dir="ltr"> ({formatUSD(row.buyPriceUsd)}
+                  {row.buyPriceForeign && (
+                    <bdi dir="ltr"> ({formatMoney(row.buyPriceForeign, row.buyCurrency)}
                     {row.fxRate && ` × ${formatNumber(row.fxRate)}`})</bdi>
+                  )}
+                  {row.po.price.check === "mismatch" && (
+                    <span className="text-amber-700 dark:text-amber-500">
+                      {" "}(רכש: <bdi dir="ltr">{poPriceLabel(row.po.price.po, row.po.price.poCurrency)}</bdi>)
+                    </span>
                   )}
                 </span>
                 {row.bol?.trim() && (
@@ -171,27 +194,61 @@ export function MonthlySummaryTable({
 
 /**
  * Purchase order price the way it has to be read: the shekel figure everything is
- * summed from, and underneath it where that figure came from — the dollar amount
- * on the purchase order, the representative rate, and the day that rate was
- * published.
+ * summed from, and underneath it where that figure came from — the foreign amount
+ * on the purchase order (dollars, euros or pounds), the representative rate, and
+ * the day that rate was published.
  *
  * Showing the provenance is the point. The conversion happened once, when the
  * shipment was delivered, and this is what lets someone check it a month later
- * instead of wondering which rate was used.
+ * instead of wondering which rate was used. Below that, when the purchase order
+ * says something different from what was entered, the order's own figure.
  */
 function BuyPriceCell({ row }: { row: MonthlyComputedRow }) {
-  if (!row.buyPriceUsd) return <>{formatILS(row.buyPrice)}</>;
   return (
     <span className="flex flex-col items-end leading-tight">
       <span>{formatILS(row.buyPrice)}</span>
-      <span className="text-xs text-muted-foreground">
-        {formatUSD(row.buyPriceUsd)}
-        {row.fxRate && ` × ${formatNumber(row.fxRate)}`}
-        {row.fxRateDate && ` (${formatDate(row.fxRateDate)})`}
-      </span>
-      {row.buyPrice === null && (
-        <span className="text-xs text-amber-600">ממתין לשער</span>
+      {row.buyPriceForeign && (
+        <span className="text-xs text-muted-foreground">
+          {formatMoney(row.buyPriceForeign, row.buyCurrency)}
+          {row.fxRate && ` × ${formatNumber(row.fxRate)}`}
+          {row.fxRateDate && ` (${formatDate(row.fxRateDate)})`}
+        </span>
       )}
+      {row.buyPriceForeign && row.buyPrice === null && (
+        <span className="text-xs text-amber-600">
+          {row.deliveredAt ? "ממתין לשער" : "יומר בשער יום המסירה"}
+        </span>
+      )}
+      <PoGap check={row.po.price.check}>
+        רכש: {poPriceLabel(row.po.price.po, row.po.price.poCurrency)}
+      </PoGap>
+    </span>
+  );
+}
+
+/** The line's quantity, and the purchase order's when the two disagree. */
+function QtyCell({ row }: { row: MonthlyComputedRow }) {
+  return (
+    <span className="flex flex-col items-end leading-tight">
+      <span>{formatNumber(row.qty)}</span>
+      <PoGap check={row.po.qty.check}>רכש: {formatNumber(row.po.qty.po)}</PoGap>
+    </span>
+  );
+}
+
+/**
+ * The purchase order's figure under a cell, only when it disagrees with what was
+ * entered — a matching figure repeated on every row would bury the ones that
+ * don't.
+ */
+function PoGap({ check, children }: { check: PoComparison["qty"]["check"]; children: React.ReactNode }) {
+  if (check !== "mismatch") return null;
+  return (
+    <span
+      className="text-xs text-amber-700 dark:text-amber-500 font-medium"
+      title="שונה ממה שמופיע בהזמנת הרכש לספק"
+    >
+      {children}
     </span>
   );
 }

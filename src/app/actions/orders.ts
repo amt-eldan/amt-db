@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { customers, orderLines, orders } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { allocatePendingCourierShipments } from "@/lib/courier-allocate";
 import { applyLineFields } from "@/lib/line-fields";
 import { requireSession } from "@/lib/require-session";
 import { MANUAL_STATUSES } from "@/lib/status";
@@ -180,7 +181,17 @@ export async function updateLineFields(input: unknown): Promise<ActionResult> {
     toWrite.fxRateSource = fields.buyPrice ? "manual" : null;
   }
 
+  // A foreign price means nothing without its currency: dollars when the sheet
+  // did not say (the only currency there used to be), and none once it is cleared.
+  toWrite.buyCurrency = fields.buyPriceForeign ? (fields.buyCurrency ?? "USD") : null;
+
   await applyLineFields(existing, toWrite);
+  // A bill of lading or PO typed by hand is a key a courier invoice may have been
+  // waiting for — same second look as after an automatic write.
+  const keyChanged =
+    String(fields.bol ?? "") !== String(existing.bol ?? "") ||
+    String(fields.poNumber ?? "") !== String(existing.poNumber ?? "");
+  if (keyChanged) await allocatePendingCourierShipments();
   revalidateLinePages();
   return { ok: true, message: "השורה עודכנה" };
 }

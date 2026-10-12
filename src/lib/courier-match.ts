@@ -521,3 +521,49 @@ export function allocationTotals(
 export function acceptGuess(shipment: CourierShipment): CourierShipment {
   return isLowConfidence(shipment.matchedBy) ? { ...shipment, matchedBy: "manual" } : shipment;
 }
+
+/**
+ * Places the shipments nobody has placed yet, against the lines as they are now —
+ * leaving every placed shipment exactly as it was.
+ *
+ * A courier invoice is matched once, at upload, against whatever the lines said
+ * that day. The bill of lading usually reaches the line later — the tracking
+ * agent finds it in the mail a day or a week after the courier billed for it —
+ * and until now that left the shipment unplaced for good, its cost never reaching
+ * the monthly summary although the key that identifies it had since arrived. This
+ * is the second look.
+ *
+ * `allowGuess: false` is for unattended use: only the identifying keys (tracking
+ * number, PO, order number) may place a shipment, never the supplier guess. A
+ * placed shipment keeps its tag (`bol` / `po` / `order`) so the review shows how
+ * it got there.
+ */
+export function placeUnplacedShipments(
+  shipments: CourierShipment[],
+  lines: CourierLineOption[],
+  opts: { allowGuess: boolean },
+): { shipments: CourierShipment[]; placed: number } {
+  const out: CourierShipment[] = [];
+  let placed = 0;
+  for (const shipment of shipments) {
+    if (shipment.lineId !== null) {
+      out.push(shipment);
+      continue;
+    }
+    const rows = matchShipmentsToLines([shipment], lines);
+    const landed = rows.filter((r) => r.lineId !== null);
+    const guessed = landed.some((r) => isLowConfidence(r.matchedBy));
+    if (landed.length === 0 || (guessed && !opts.allowGuess)) {
+      out.push(shipment);
+      continue;
+    }
+    placed++;
+    for (const row of rows) {
+      // splitCount is the matcher's working detail; a stored shipment has none.
+      const stored: Partial<MatchedShipment> = { ...row };
+      delete stored.splitCount;
+      out.push(stored as CourierShipment);
+    }
+  }
+  return { shipments: out, placed };
+}

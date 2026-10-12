@@ -17,6 +17,7 @@
  */
 import { hasBol } from "./bol";
 import { HEBREW_MONTHS } from "./format";
+import type { MailUpdateCounts } from "./mail-updates";
 import { lineProfit, lineValue } from "./profit";
 import { lineStatus, type LineStatus } from "./status";
 
@@ -69,6 +70,8 @@ export interface DashboardInput {
   courierInvoices: DashboardCourierInvoice[];
   pendingOrders: number;
   pendingCourierInvoices: number;
+  /** Supplier mail nobody has marked as handled yet, per kind (see lib/mail-updates). */
+  mailUpdates?: MailUpdateCounts;
   today?: Date;
 }
 
@@ -334,6 +337,20 @@ export function buildDashboard(input: DashboardInput): DashboardData {
       tone: "danger",
     },
     {
+      id: "mail-delay",
+      label: "עיכובים באספקה שהספקים הודיעו עליהם במייל",
+      count: input.mailUpdates?.delay ?? 0,
+      href: "/updates?kind=delay",
+      tone: "danger",
+    },
+    {
+      id: "mail-payment",
+      label: "בקשות לתשלום מספקים שהתקבלו במייל",
+      count: input.mailUpdates?.payment_request ?? 0,
+      href: "/updates?kind=payment_request",
+      tone: "warning",
+    },
+    {
       id: "staged-orders",
       label: "הזמנות סרוקות ממתינות לאישור",
       count: input.pendingOrders,
@@ -374,6 +391,13 @@ export function buildDashboard(input: DashboardInput): DashboardData {
       count: lowConfidenceBol,
       href: "/bol",
       tone: "warning",
+    },
+    {
+      id: "mail-bol",
+      label: "שטרי מטען חדשים שהתקבלו במייל",
+      count: input.mailUpdates?.bol ?? 0,
+      href: "/updates?kind=bol",
+      tone: "info",
     },
     {
       id: "missing-shipping",

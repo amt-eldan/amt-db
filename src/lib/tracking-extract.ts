@@ -68,6 +68,12 @@ const CARRIER_SHAPES: { carrier: DetectedCarrier; pattern: RegExp; strong: boole
   { carrier: "FedEx", pattern: /\b\d{34}\b/g, strong: false },
   // DHL Express: exactly 10 digits. The single most collision-prone shape here.
   { carrier: "DHL", pattern: /\b\d{10}\b/g, strong: false },
+  // DHL Express as its own documents print it: "98 6006 4911" (2-4-4), and the
+  // waybill-label form "9860 0649 11" (4-4-2). A UK phone number wears 2-4-4 too,
+  // which is why this is never strong — it is written only when a label says what
+  // it is, like every other bare-digit shape.
+  { carrier: "DHL", pattern: /\b\d{2}[ -]\d{4}[ -]\d{4}\b/g, strong: false },
+  { carrier: "DHL", pattern: /\b\d{4}[ -]\d{4}[ -]\d{2}\b/g, strong: false },
 ];
 
 /**

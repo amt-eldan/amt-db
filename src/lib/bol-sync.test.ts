@@ -27,7 +27,8 @@ function worklistLine(over: Partial<BolWorklistRow> = {}): BolWorklistRow {
     poNumber: "4501234567",
     supplier: "DigiKey",
     contractDueDate: null,
-    buyPriceUsd: null,
+    buyPriceForeign: null,
+    buyCurrency: null,
     ...over,
   };
 }
@@ -43,11 +44,21 @@ function mail(over: Partial<ParsedEmail> & { id: string }): ParsedEmail {
   };
 }
 
-/** A mailbox that answers every search with the same set of mails. */
-function port(mails: ParsedEmail[]): GmailPort {
+/**
+ * A mailbox that searches like Gmail does, as far as these tests need: the broad
+ * query returns every mail, and a quoted term returns the mails containing it —
+ * in their text, or in an attachment this code cannot read (`attachments`).
+ */
+function port(mails: ParsedEmail[], attachments: Record<string, string> = {}): GmailPort {
   const byId = new Map(mails.map((m) => [m.id, m]));
   return {
-    search: vi.fn(async () => [...byId.keys()]),
+    search: vi.fn(async (query: string) => {
+      const quoted = /"([^"]+)"/.exec(query)?.[1];
+      if (!quoted || query.includes(" OR ")) return [...byId.keys()];
+      return mails
+        .filter((m) => `${m.text}\n${attachments[m.id] ?? ""}`.includes(quoted))
+        .map((m) => m.id);
+    }),
     fetch: vi.fn(async (id: string) => byId.get(id)!),
   };
 }
@@ -142,7 +153,71 @@ describe("syncBolFromMail — matching a mail to a line", () => {
   });
 });
 
+describe("syncBolFromMail — purchase orders the mail does not spell like we do", () => {
+  it("matches a purchase order we store with a PO- prefix", async () => {
+    getBolWorklist.mockResolvedValue([worklistLine({ poNumber: "PO-4501234567" })]);
+    await syncBolFromMail({
+      gmail: port([mail({ id: "m1", text: "Your order 4501234567 shipped. AWB: 9860064911" })]),
+    });
+    expect(written()).toMatchObject([{ lineId: 42, bol: "9860064911" }]);
+  });
+
+  it("matches a mail that writes PO#: before the number", async () => {
+    getBolWorklist.mockResolvedValue([worklistLine()]);
+    await syncBolFromMail({
+      gmail: port([mail({ id: "m1", text: "PO#: 4501234567 — Waybill 9860064911" })]),
+    });
+    expect(written()).toMatchObject([{ lineId: 42, bol: "9860064911" }]);
+  });
+
+  // The PO only inside the attached packing list: Gmail found the mail by it, and
+  // the body carries the waybill. The search is the proof the mail is about the line.
+  it("trusts Gmail's match on the purchase order when the body does not quote it", async () => {
+    getBolWorklist.mockResolvedValue([worklistLine()]);
+    await syncBolFromMail({
+      gmail: port(
+        [mail({ id: "m1", subject: "Shipment notification", text: "Shipment notification\nAWB: 9860064911" })],
+        { m1: "PACKING LIST  PO 4501234567" },
+      ),
+    });
+    expect(written()).toMatchObject([{ lineId: 42, bol: "9860064911" }]);
+  });
+
+  it("reads DHL's grouped print of the waybill", async () => {
+    getBolWorklist.mockResolvedValue([worklistLine()]);
+    await syncBolFromMail({
+      gmail: port([mail({ id: "m1", text: "PO 4501234567\nWaybill: 98 6006 4911" })]),
+    });
+    expect(written()).toMatchObject([{ lineId: 42, bol: "9860064911", carrier: "DHL" }]);
+  });
+
+  it("puts one waybill on every line of the purchase order", async () => {
+    getBolWorklist.mockResolvedValue([
+      worklistLine({ lineId: 41, pn: "PART-A" }),
+      worklistLine({ lineId: 42, pn: "PART-B" }),
+    ]);
+    await syncBolFromMail({
+      gmail: port([mail({ id: "m1", text: "PO 4501234567 shipped. Tracking number: 9860064911" })]),
+    });
+    expect(written().map((m: { lineId: number }) => m.lineId).sort()).toEqual([41, 42]);
+  });
+});
+
 describe("syncBolFromMail — what it reports instead of writing", () => {
+  it("reports two numbers in one mail rather than dropping the mail silently", async () => {
+    getBolWorklist.mockResolvedValue([worklistLine()]);
+    const result = await syncBolFromMail({
+      gmail: port([
+        mail({
+          id: "m1",
+          text: "PO 4501234567 Tracking Number: 1Z999AA10123456784, Tracking Number: 1Z999AA10123456785",
+        }),
+      ]),
+    });
+    expect(writeBolMatches).not.toHaveBeenCalled();
+    expect(result.ok && result.review).toHaveLength(1);
+  });
+
   it("reports two equally strong numbers rather than choosing", async () => {
     getBolWorklist.mockResolvedValue([worklistLine()]);
     const result = await syncBolFromMail({

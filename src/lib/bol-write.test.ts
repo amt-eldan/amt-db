@@ -29,6 +29,12 @@ vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("./line-fields", () => ({ applyLineFields }));
 // The conversion itself is covered in fx.test.ts and shipment-write.test.ts.
 vi.mock("./fx-apply", () => ({ convertBuyPriceToIls }));
+// The courier second look has its own tests (courier-match.test.ts); here it is
+// only checked to run after a write, and never when nothing was written.
+const { allocatePendingCourierShipments } = vi.hoisted(() => ({
+  allocatePendingCourierShipments: vi.fn(),
+}));
+vi.mock("./courier-allocate", () => ({ allocatePendingCourierShipments }));
 vi.mock("@/db", () => ({
   db: {
     select: () => ({
@@ -223,6 +229,43 @@ describe("writeBolMatches", () => {
     });
   });
 
+  // The reported bug: a tracking number found by its purchase order never reached
+  // the open orders, because a PO with several lines was "ambiguous".
+  it("writes a PO-only match onto every open line of that purchase order", async () => {
+    const onPo = (lineId: number, over: Record<string, unknown> = {}) => ({
+      lineId,
+      orderNumber: `ORD-${lineId}`,
+      pn: `PN-${lineId}`,
+      sku: null,
+      poNumber: "4500012345",
+      supplier: "Acme",
+      bol: null,
+      isOpen: true,
+      ...over,
+    });
+    candidates.push(onPo(41), onPo(42), onPo(43, { bol: "OLD" }), onPo(44, { isOpen: false }));
+    for (const id of [41, 42, 43, 44]) rows.set(id, line({ id }));
+
+    const summary = await writeBolMatches([
+      bolMatchInput.parse({ bol: "9860064911", poNumber: "4500012345", confidence: 0.9 }),
+    ]);
+
+    expect(summary).toMatchObject({ written: 2, skipped: 0 });
+    expect(summary.results.map((r) => r.lineId)).toEqual([41, 42]);
+    expect(applyLineFields.mock.calls.map((c) => (c[0] as OrderLine).id)).toEqual([41, 42]);
+  });
+
+  // The waybill a courier already billed for can land as a shipping cost now.
+  it("gives waiting courier invoices a second look after writing, and only then", async () => {
+    allocatePendingCourierShipments.mockClear();
+    await writeBolMatches([bolMatchInput.parse({ bol: "1Z999AA10123456784", pn: "NOT-HERE" })]);
+    expect(allocatePendingCourierShipments).not.toHaveBeenCalled();
+
+    rows.set(42, line());
+    await writeBolMatches([match()]);
+    expect(allocatePendingCourierShipments).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a lineId-less match it could not resolve instead of guessing", async () => {
     const summary = await writeBolMatches([
       bolMatchInput.parse({ bol: "1Z999AA10123456784", pn: "NOT-HERE" }),
@@ -244,8 +287,23 @@ describe("a match that also carries a delivery and a price", () => {
     await writeBolMatches([match({ deliveredAt: "2026-08-12", buyPriceUsd: 41.5 })]);
     expect(writtenFields()).toMatchObject({
       deliveredAt: "2026-08-12",
-      buyPriceUsd: "41.5",
+      buyPriceForeign: "41.5",
+      buyCurrency: "USD",
     });
+  });
+
+  // Our own purchase order is the better witness: once it priced the line, a
+  // dollar figure a shipping mail happened to quote does not replace it.
+  it("leaves a price that came from our purchase order alone", async () => {
+    rows.set(42, line({ poUnitCost: "12.5", buyPriceForeign: "12.5", buyCurrency: "EUR" }));
+    await writeBolMatches([match({ deliveredAt: "2026-08-12", buyPriceUsd: 41.5 })]);
+    expect(writtenFields()).not.toHaveProperty("buyPriceForeign");
+    expect(convertBuyPriceToIls).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      "12.5",
+      "EUR",
+      "2026-08-12",
+    );
   });
 
   it("converts through the one shared helper, with the delivery date it was given", async () => {
@@ -260,6 +318,7 @@ describe("a match that also carries a delivery and a price", () => {
     expect(convertBuyPriceToIls).toHaveBeenCalledWith(
       expect.objectContaining({ id: 42 }),
       "41.5",
+      "USD",
       "2026-08-12",
     );
     expect(writtenFields()).toMatchObject({ buyPrice: "154.42", fxRate: "3.721" });
@@ -269,6 +328,6 @@ describe("a match that also carries a delivery and a price", () => {
     rows.set(42, line());
     await writeBolMatches([match()]);
     expect(writtenFields()).not.toHaveProperty("deliveredAt");
-    expect(writtenFields()).not.toHaveProperty("buyPriceUsd");
+    expect(writtenFields()).not.toHaveProperty("buyPriceForeign");
   });
 });

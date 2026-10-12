@@ -9,6 +9,7 @@ import {
   matchShipmentsToLines,
   normalizeSupplier,
   normalizeTracking,
+  placeUnplacedShipments,
   shipmentTotal,
   splitAmount,
   suppliersMatch,
@@ -548,5 +549,63 @@ describe("a guess cannot become money until it is accepted", () => {
     expect(totals.pendingGuesses).toBe(0);
     expect(totals.allocated).toBe(531.78);
     expect(totals.difference).toBe(0);
+  });
+});
+
+describe("placeUnplacedShipments", () => {
+  const option = (over: Partial<CourierLineOption> & { lineId: number }): CourierLineOption => ({
+    orderNumber: `ORD-${over.lineId}`,
+    customerName: "Ness-Tech",
+    pn: null,
+    poNumber: null,
+    supplier: null,
+    bol: null,
+    shippingCost: null,
+    orderDate: "2026-08-01",
+    isOpen: true,
+    ...over,
+  });
+  const shipment = (over: Partial<CourierShipment> = {}): CourierShipment => ({
+    bol: "9860064911",
+    reference: null,
+    customsDeclaration: null,
+    shipper: null,
+    shipmentDate: "2026-08-20",
+    description: null,
+    amount: "300.00",
+    charges: [],
+    lineId: null,
+    matchedBy: null,
+    ...over,
+  });
+
+  // The waybill reached the lines a week after the courier billed for it.
+  it("places a shipment whose tracking number has since reached the lines, split across them", () => {
+    const lines = [option({ lineId: 1, bol: "9860064911" }), option({ lineId: 2, bol: "98 6006 4911" })];
+    const result = placeUnplacedShipments([shipment()], lines, { allowGuess: false });
+    expect(result.placed).toBe(1);
+    expect(result.shipments).toEqual([
+      expect.objectContaining({ lineId: 1, amount: "150.00", matchedBy: "bol" }),
+      expect.objectContaining({ lineId: 2, amount: "150.00", matchedBy: "bol" }),
+    ]);
+    expect(result.shipments[0]).not.toHaveProperty("splitCount");
+  });
+
+  it("leaves placed shipments exactly as they were", () => {
+    const placed = shipment({ lineId: 9, matchedBy: "manual", bol: "OTHER" });
+    const result = placeUnplacedShipments([placed], [option({ lineId: 1, bol: "OTHER" })], {
+      allowGuess: false,
+    });
+    expect(result).toEqual({ shipments: [placed], placed: 0 });
+  });
+
+  it("never lets an unattended pass place a shipment on a supplier guess", () => {
+    const lines = [option({ lineId: 1, supplier: "Acme Electronics", orderDate: "2026-08-01" })];
+    const guessable = shipment({ bol: "NOPE", shipper: "ACME ELECTRONICS LTD" });
+    expect(placeUnplacedShipments([guessable], lines, { allowGuess: false }).placed).toBe(0);
+    expect(placeUnplacedShipments([guessable], lines, { allowGuess: true }).shipments[0]).toMatchObject({
+      lineId: 1,
+      matchedBy: "supplier",
+    });
   });
 });

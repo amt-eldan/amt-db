@@ -10,7 +10,7 @@
 /**
  * Currency/quantity text → a finite number, or null.
  *
- * Strips ₪, $, thousands separators and whitespace, then parseFloat. parseFloat
+ * Strips ₪, $, €, £, thousands separators and whitespace, then parseFloat. parseFloat
  * semantics are deliberate: a trailing unit ("50 יח'" → 50) is what the legacy
  * spreadsheet contained, and rejecting it would drop values that are accepted
  * today. Non-finite results (NaN, and Infinity from something like "1e999")
@@ -19,7 +19,7 @@
 export function parseNumeric(v: string | number | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  const cleaned = v.replace(/[₪$,\s]/g, "");
+  const cleaned = v.replace(/[₪$€£,\s]/g, "");
   if (cleaned === "") return null;
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : null;

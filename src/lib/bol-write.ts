@@ -3,7 +3,9 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { getBolCandidateLines } from "@/db/queries";
 import { orderLines, type OrderLine } from "@/db/schema";
-import { evaluateBolMatch, resolveBolLine, type BolMatchedBy } from "./bol-match";
+import { evaluateBolMatch, resolveBolLines, type BolMatchedBy } from "./bol-match";
+import { allocatePendingCourierShipments } from "./courier-allocate";
+import { agentBuyPrice } from "./currency";
 import { convertBuyPriceToIls } from "./fx-apply";
 import { applyLineFields } from "./line-fields";
 import { normalizeCarrierStatus } from "./shipment-status";
@@ -40,12 +42,14 @@ export interface BolWriteSummary {
  * `writeShipmentUpdates` in ./shipment-write.
  *
  * A match either names its `lineId` (taken from the worklist) or quotes what the
- * email said — `pn`, `poNumber`, `orderNumber` — and `resolveBolLine` finds the
+ * email said — `pn`, `poNumber`, `orderNumber` — and `resolveBolLines` finds the
  * open line itself, so a tracking number that shows up without a worklist behind
- * it still lands.
+ * it still lands. A purchase-order number on its own lands on every open line of
+ * that order still waiting for a number: one PO, one supplier shipment.
  *
  * The rules, all of them enforced here:
- *  - one line or none: several lines matching the same P/N is reported, never guessed.
+ *  - a P/N resolves to one line or none: several lines matching it is reported,
+ *    never guessed. A PO number alone covers all its waiting lines.
  *  - `evaluateBolMatch` decides: known line, still open, `bol` empty, confidence
  *    at or above the floor. Anything else is skipped with a reason.
  *  - a human's note in `delivery_update` is never overwritten — the carrier's
@@ -74,12 +78,16 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
       targets.push({ match, lineId: match.lineId, matchedBy: "lineId" });
       continue;
     }
-    const resolution = resolveBolLine(match, candidates);
-    if (resolution.lineId === null) {
+    // A PO number on its own names every open line of that purchase order — one
+    // supplier shipment — so it can resolve to several; a P/N stays one or none.
+    const resolution = resolveBolLines(match, candidates);
+    if (resolution.lineIds === null) {
       results.push({ lineId: null, status: "skipped", reason: resolution.reason });
       continue;
     }
-    targets.push({ match, lineId: resolution.lineId, matchedBy: resolution.matchedBy });
+    for (const lineId of resolution.lineIds) {
+      targets.push({ match, lineId, matchedBy: resolution.matchedBy });
+    }
   }
 
   // One lookup for the whole batch rather than a round-trip per match — a nightly
@@ -131,12 +139,14 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     // shared helper the status path uses, so one line's buy price cannot mean two
     // different things depending on which door it came through.
     if (match.deliveredAt) fields.deliveredAt = match.deliveredAt;
-    if (match.buyPriceUsd) fields.buyPriceUsd = match.buyPriceUsd;
+    const price = agentBuyPrice(line, match.buyPriceUsd);
+    Object.assign(fields, price.fields);
     Object.assign(
       fields,
       await convertBuyPriceToIls(
         line,
-        match.buyPriceUsd ?? line.buyPriceUsd,
+        price.amount,
+        price.currency,
         match.deliveredAt ?? line.deliveredAt,
       ),
     );
@@ -174,6 +184,9 @@ export async function writeBolMatches(matches: BolMatchInput[]): Promise<BolWrit
     revalidatePath("/orders");
     revalidatePath("/monthly");
     revalidatePath("/bol");
+    // A courier may already have billed this waybill: its shipment sat unplaced
+    // until the number reached the line, and now it can land as a shipping cost.
+    await allocatePendingCourierShipments();
   }
 
   return { ok: true, written, skipped: results.length - written, results };

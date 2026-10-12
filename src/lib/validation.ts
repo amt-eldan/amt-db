@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { FOREIGN_CURRENCIES, PURCHASE_CURRENCIES } from "./currency";
+import { MAIL_UPDATE_KINDS } from "./mail-updates";
 import { parseNumericString } from "./numeric";
 import { SHIPMENT_STATUSES } from "./shipment-status";
 import { MANUAL_STATUSES } from "./status";
@@ -71,7 +73,12 @@ export const manualFieldsInput = z.object({
   poNumber: optionalText,
   supplier: optionalText,
   buyPrice: optionalNumeric,
-  buyPriceUsd: optionalNumeric,
+  buyPriceForeign: optionalNumeric,
+  buyCurrency: z
+    .enum(FOREIGN_CURRENCIES)
+    .nullish()
+    .or(z.literal(""))
+    .transform((c) => (c ? c : null)),
   shippingCost: optionalNumeric,
   deliveryUpdate: optionalText,
   paymentMethod: optionalText,
@@ -352,6 +359,48 @@ export const shipmentUpdateInput = z
   );
 
 /**
+ * One thing a supplier wrote to us about a purchase order, as the scheduled task
+ * reports it: a bill of lading, a delayed delivery, or a request for payment.
+ *
+ * Keyed by `poNumber` rather than a line, because that is what the mail quotes and
+ * because one purchase order is often several lines. `emailId` is required: the
+ * same mail read on two runs must be recognisable as the same mail, and it is what
+ * the screen links back to.
+ */
+export const mailUpdateInput = z.object({
+  poNumber: z.string().trim().min(1, "מספר הזמנת רכש חובה").max(200),
+  kind: z.enum(MAIL_UPDATE_KINDS),
+  emailId: z.string().trim().min(1, "מזהה המייל חובה").max(200),
+  threadId: optionalText,
+  subject: optionalText,
+  from: optionalText,
+  receivedAt: optionalIsoDate,
+  /** The sentence that makes it this kind — what a person reads instead of the mail. */
+  quote: optionalText,
+  /** kind 'bol': the tracking number. It is also written onto the PO's open lines. */
+  bol: z
+    .string()
+    .trim()
+    .max(200)
+    .nullish()
+    .transform((s) => (s ? s : null)),
+  carrier: optionalText,
+  /** kind 'delay': the new date the supplier gave, when it gave one. */
+  newDate: optionalIsoDate,
+  confidence: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .transform((v) => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = typeof v === "string" ? parseFloat(v) : v;
+      if (!Number.isFinite(n)) return null;
+      return String(Math.min(1, Math.max(0, n)));
+    }),
+});
+
+export type MailUpdateInput = z.infer<typeof mailUpdateInput>;
+
+/**
  * Applying the reviewed matches from an uploaded purchase order.
  *
  * The browser sends line ids and unit costs; it does not send its matching
@@ -363,7 +412,7 @@ export const shipmentUpdateInput = z
 export const poApplyInput = z.object({
   poNumber: z.string().trim().min(1, "מספר הזמנת רכש חובה").max(200),
   supplier: optionalText,
-  currency: z.enum(["USD", "ILS"]),
+  currency: z.enum(PURCHASE_CURRENCIES),
   sourceFile: optionalText,
   matches: z
     .array(

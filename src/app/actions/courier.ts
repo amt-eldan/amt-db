@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import {
@@ -11,6 +11,7 @@ import {
   stagedCourierInvoices,
 } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { applyShippingCosts, type Tx } from "@/lib/courier-allocate";
 import { allocationsFromShipments, isLowConfidence } from "@/lib/courier-match";
 import { isUniqueViolation } from "@/lib/pg-error";
 import { requireSession } from "@/lib/require-session";
@@ -35,43 +36,6 @@ function duplicateError(courier: string, invoiceNumber: string): ActionResult {
     duplicate: true,
     error: `חשבונית ${invoiceNumber} מ-${courier} כבר קיימת`,
   };
-}
-
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-/**
- * Rewrites `order_lines.shipping_cost` for the given lines as the sum of their
- * allocations — the one rule that keeps the number explainable: every shekel of
- * shipping cost on a line traces back to a courier invoice, and a line with no
- * allocations left goes back to empty rather than keeping a figure nobody can
- * account for.
- *
- * Returns what it wrote, so the caller can put it in the audit entry.
- */
-async function applyShippingCosts(tx: Tx, lineIds: number[]): Promise<Record<number, string | null>> {
-  const unique = [...new Set(lineIds)];
-  if (unique.length === 0) return {};
-
-  const sums = await tx
-    .select({
-      lineId: courierInvoiceAllocations.lineId,
-      total: sql<string>`sum(${courierInvoiceAllocations.amount})`,
-    })
-    .from(courierInvoiceAllocations)
-    .where(inArray(courierInvoiceAllocations.lineId, unique))
-    .groupBy(courierInvoiceAllocations.lineId);
-
-  const totals = new Map(sums.map((row) => [row.lineId, row.total]));
-  const written: Record<number, string | null> = {};
-  for (const lineId of unique) {
-    const value = totals.get(lineId) ?? null;
-    written[lineId] = value;
-    await tx
-      .update(orderLines)
-      .set({ shippingCost: value, updatedAt: new Date() })
-      .where(eq(orderLines.id, lineId));
-  }
-  return written;
 }
 
 /** Lines an allocation points at must still exist, or the FK would fail unexplained. */
